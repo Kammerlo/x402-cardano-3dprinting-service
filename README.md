@@ -22,6 +22,8 @@ A Cardano x402 storefront that turns an actual CIP-30 wallet payment into a supe
 
 No public printer port is mapped. Checkout shows **Gateway offline**, **Awaiting operator**, **Printer not ready**, or **Paused by operator** according to the actual condition; it refreshes automatically every 15 seconds. A new local setup will show **Gateway offline** until the first heartbeat. Check `docker compose logs gateway` and the four files in `prints/` when it shows **Printer not ready**. The shop blocks new orders when the gateway heartbeat is stale, the printer is not idle, or any required plate file is missing. A previously paid order remains in the durable queue if the gateway goes offline. The Compose migration job applies all idempotent SQL files in order on each start, including upgrades of an existing local volume.
 
+If the gateway reports `ECONNREFUSED ...:8787`, check `docker compose ps` and `docker compose logs --tail=100 api migrate`. This is the gateway-to-API connection, separate from the U1. Compose waits for `/api/health` before starting the gateway. A later connection failure means the API became unavailable and requires inspection of its logs.
+
 ```mermaid
 flowchart TD
   B["Browser + CIP-30 wallet"] --> A["Public x402 API"]
