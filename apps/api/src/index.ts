@@ -162,6 +162,27 @@ app.post("/api/admin/orders/:id/status", async c => {
   return rows.length ? c.json({ ok: true }) : error("Invalid transition", 409);
 });
 
+app.post("/api/admin/orders/:id/requeue", async c => {
+  const env = config(c); if (!await apiAuth(c.req.header("authorization"), env.ADMIN_TOKEN)) return error("Unauthorized", 401);
+  const b = await c.req.json().catch(() => null);
+  if (b?.confirmedPhysicalReview !== true) return error("Confirm the printer and previous batch were inspected before requeueing");
+  // Never restart an old batch ID. The gateway may have already started it and
+  // journals that ID permanently. A reviewed paid order returns to the pool
+  // for a *new* supervised batch while the old batch remains for audit.
+  const rows = await query<{ id: string }>(env, `WITH moved AS (
+    UPDATE orders AS o SET status='PAID',batch_id=NULL,updated_at=now()
+    FROM print_batches AS b
+    WHERE o.id=$1 AND o.status='NEEDS_REVIEW' AND o.batch_id=b.id
+      AND b.status IN ('NEEDS_REVIEW','PRINTED') AND o.tx_hash IS NOT NULL
+    RETURNING o.id,b.id AS previous_batch
+  ), recorded AS (
+    INSERT INTO order_events(order_id,kind,details)
+    SELECT id,'REPRINT_QUEUED',jsonb_build_object('previousBatch',previous_batch) FROM moved
+    RETURNING order_id
+  ) SELECT order_id AS id FROM recorded`, [c.req.param("id")]);
+  return rows.length ? c.json({ ok: true }) : error("Order is not eligible for reprint; review its batch and payment first", 409);
+});
+
 app.post("/api/gateway/heartbeat", async c => {
   const env = config(c); if (!await apiAuth(c.req.header("authorization"), env.GATEWAY_TOKEN)) return error("Unauthorized", 401);
   const b = await c.req.json().catch(() => null);

@@ -4,12 +4,13 @@
 2. Check the printer is idle, the matching 1–4 copy pre-sliced plate files exist, filament and bed are ready, and the gateway is armed. Press **Create batch**. It atomically assigns up to four oldest paid orders to one plate.
 3. The gateway polls the API, checks the batch ID/count, checks printer idle state, records a journal entry, uploads the chosen G-code and starts it once. The dashboard moves BATCHED → PRINTING → PRINTED. The actual U1 reports completion through Moonraker.
 4. Inspect physical output, pack each of the N tokens, use the matching private order addresses, and mark orders **SHIPPED** individually. The dashboard never prints shipping labels automatically.
-5. If a job shows NEEDS_REVIEW or gets stuck in DISPATCHING/PRINTING, inspect Moonraker, gateway logs and `/data/{batch-id}.json` before any restart. The journal deliberately stops automatic duplicate launches. Record manual resolution; the current UI has no requeue control. If you refund, send ADA manually, verify the transfer, then mark **REFUNDED**. That label alone does not send money.
-6. Restart the gateway only after the last print is resolved to re-arm it for one next launch. Back up Neon and the persistent journal. Pause orders if fulfillment is blocked.
+5. If a job shows NEEDS_REVIEW or gets stuck in DISPATCHING/PRINTING, inspect Moonraker, gateway logs and `/data/{batch-id}.json` before any restart. The journal deliberately stops automatic duplicate launches. A stuck batch must be resolved manually before its orders can be requeued; do not restart or remove the journal while the printer may still be running.
+6. For a completed plate with a failed object, click **Needs reprint** on that PRINTED order. For an order already NEEDS_REVIEW, inspect the physical plate and previous job, then click **Return to print queue** and confirm. This moves that paid order to PAID and records the previous batch in `order_events`. It does not start a print. Click **Create batch** to combine it with other paid orders into a new plate, and supervise the printer. Never use the old batch ID to retry an uncertain start. If you refund, send ADA manually, verify the transfer, then mark **REFUNDED**. That label alone does not send money.
+7. Restart the gateway only after the last print is resolved to re-arm it for one next launch. Back up Neon and the persistent journal. Pause orders if fulfillment is blocked.
 
 ## Order states
 
-`AWAITING_PAYMENT → PAID → BATCHED → PRINTING → PRINTED → SHIPPED`; exceptions are `NEEDS_REVIEW` and manually recorded `REFUNDED`. Batches use `QUEUED → DISPATCHING → PRINTING → PRINTED`. Orders and batches remain private. A transaction hash, when available, links to Cardanoscan.
+`AWAITING_PAYMENT → PAID → BATCHED → PRINTING → PRINTED → SHIPPED`; exceptions are `NEEDS_REVIEW` and manually recorded `REFUNDED`. A physically reviewed `NEEDS_REVIEW` order can return to `PAID` for a new batch; it is never charged again. Batches use `QUEUED → DISPATCHING → PRINTING → PRINTED`. Orders and batches remain private. A transaction hash, when available, links to Cardanoscan.
 
 ## Payment ambiguity
 
