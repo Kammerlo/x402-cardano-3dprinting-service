@@ -22,6 +22,18 @@ The requested combination of **Vercel free hosting and real sales** is unavailab
 
 Cloudflare Workers Free currently publishes 100,000 requests/day and 10 ms CPU per invocation. Network waiting does not count toward CPU, but the **Cardano SDK's Worker runtime compatibility and CPU budget are an explicit first implementation gate**. If this fails, use the Vercel Pro path or host only the public API behind a Cloudflare Tunnel on the existing home server. A tunnel needs no inbound port and hides the origin IP from visitors, but it gives the public API a dependency on home uptime. The outbound worker design remains the preferred separation.
 
+### Existing home server as the API host
+
+The public resource server can run as an isolated Node container on the existing home server, with Neon and the hosted facilitator still outside the home network. This avoids the Cloudflare Worker CPU/runtime limit. There are two ingress choices:
+
+| Route | Home IP visibility | Inbound port | Operational note |
+| --- | --- | --- | --- |
+| **Cloudflare Tunnel → API container** | No home IP in public DNS for the service | None | Preferred if keeping the home IP out of the public path. `cloudflared` makes outbound connections; restrict the tunnel route to the API container. |
+| **Cloudflare proxied DNS → router 443 → Synology reverse proxy → API container** | DNS normally returns Cloudflare IPs, but historical records, other DNS records, or direct-origin discovery can expose the home IP | Yes, 443 | Feasible with TLS, firewall restricted to Cloudflare origin IP ranges, and monitoring. A reverse proxy by itself does not conceal the public home IP. |
+| **Direct DNS → router 443 → reverse proxy** | Public home IP is visible | Yes, 443 | Does not meet the stated IP privacy requirement. |
+
+Keep DSM administration, Moonraker, and the printer camera off every public route. The reverse proxy routes only a dedicated API hostname to the API container; the printer worker remains a separate local process with its own credentials and outbound-only calls. Public checkout routes still need request limits and validation; worker and operator routes need explicit authentication. Home power/internet availability becomes purchase availability, so show a paused checkout when the backend or printer is unavailable.
+
 The services can start at $0/month in the recommended path, within their limits. This excludes a domain, filament, electricity, packaging, shipping, network transaction fees, possible facilitator fees, and any paid provider upgrade. A free tier is not a service-level guarantee.
 
 ## Trust boundaries
@@ -98,3 +110,5 @@ Suggested endpoints: `GET /catalog`, `POST /orders`, `GET /orders/{id}`, `POST /
 - Cardano x402 route and CIP-30 template: https://developers.cardano.org/x402/ and https://developers.cardano.org/templates/x402-next/
 - Snapmaker U1 Moonraker fork: https://github.com/Snapmaker/u1-moonraker
 - Moonraker file upload and print start: https://moonraker.readthedocs.io/en/latest/external_api/file_manager/ and https://moonraker.readthedocs.io/en/latest/external_api/printer/
+- Cloudflare Tunnel outbound connection model: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/
+- Proxied DNS and potential origin exposure: https://developers.cloudflare.com/dns/proxy-status/ and https://developers.cloudflare.com/learning-paths/prevent-ddos-attacks/advanced/protect-origin-ip/
