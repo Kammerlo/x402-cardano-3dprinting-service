@@ -1,0 +1,12 @@
+# Run only on the operator's home host. No inbound port is published.
+services:
+  gateway:
+    build: .
+    command: npm run dev -w @print/gateway
+    restart: unless-stopped
+    env_file: .env.gateway
+    volumes:
+      - ./prints:/prints:ro
+      - gateway_data:/data
+volumes:
+  gateway_data:

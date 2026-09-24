@@ -1,0 +1,55 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: print
+      POSTGRES_PASSWORD: local-only-password
+      POSTGRES_DB: print
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./db/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U print -d print"]
+      interval: 3s
+      retries: 15
+  api:
+    build: .
+    command: npm run dev -w @print/api
+    environment:
+      LOCAL_DATABASE_URL: postgresql://print:local-only-password@db:5432/print
+      DEMO_PAYMENT_MODE: "true"
+      FRONTEND_ORIGIN: http://localhost:5173
+      PRICE_LOVELACE: "5000000"
+      ADMIN_TOKEN: local-admin-token-replace-before-exposure-000001
+      GATEWAY_TOKEN: local-gateway-token-replace-before-exposure-0001
+      GATEWAY_URL: http://gateway:8790
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8787:8787"
+  gateway:
+    build: .
+    command: npm run dev -w @print/gateway
+    environment:
+      API_URL: http://api:8787
+      GATEWAY_TOKEN: local-gateway-token-replace-before-exposure-0001
+      MOCK_PRINTER: "true"
+      ARM_ONCE: "true"
+      STATE_DIR: /data
+    volumes:
+      - gateway_data:/data
+    depends_on:
+      - api
+  web:
+    build: .
+    command: npm run dev -w @print/web
+    environment:
+      API_PROXY_TARGET: http://api:8787
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:5173:5173"
+volumes:
+  db_data:
+  gateway_data:

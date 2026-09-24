@@ -1,0 +1,7 @@
+{
+  "name": "x402-print-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": { "FRONTEND_ORIGIN": "https://YOUR-PAGES-SITE.pages.dev", "NETWORK": "cardano:mainnet", "PRICE_LOVELACE": "5000000", "BATCH_SIZE": "4" }
+}

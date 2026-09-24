@@ -1,0 +1,58 @@
+import { useEffect, useRef, useState } from 'react';
+import * as THREE from 'three';
+
+export function ModelScene() {
+  const mount = useRef<HTMLDivElement>(null);
+  const [exploded, setExploded] = useState(false);
+  const [spin, setSpin] = useState(true);
+  useEffect(() => {
+    const el = mount.current;
+    if (!el) return;
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(35, 1, .1, 100);
+    camera.position.set(0, 1.6, 8.3);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    el.appendChild(renderer.domElement);
+    scene.add(new THREE.AmbientLight(0xffffff, 2.2));
+    const key = new THREE.DirectionalLight(0xffffff, 3.2); key.position.set(-3, 5, 7); scene.add(key);
+    const rim = new THREE.DirectionalLight(0x8aa9ff, 3); rim.position.set(4, -2, -3); scene.add(rim);
+    const assembly = new THREE.Group(); scene.add(assembly);
+    const dark = new THREE.MeshPhysicalMaterial({ color: 0x192fba, metalness: .1, roughness: .3, clearcoat: .7 });
+    const pale = new THREE.MeshPhysicalMaterial({ color: 0xf0ece3, roughness: .56 });
+    const orange = new THREE.MeshPhysicalMaterial({ color: 0xff6a42, roughness: .4 });
+    const pieces: { mesh: THREE.Object3D; target: number; home: number }[] = [];
+    const cylinder = (radius: number, height: number, material: THREE.Material, y: number, x = 0, z = 0) => {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, height, 96), material);
+      m.position.set(x, y, z); assembly.add(m); return m;
+    };
+    // The layers match the single-piece printable medallion in model/proof-token.scad.
+    pieces.push({ mesh: cylinder(1.72, .21, dark, -.34), target: -.86, home: -.34 });
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(1.48, .055, 12, 120), orange);
+    ring.rotation.x = Math.PI / 2; ring.position.y = -.21; assembly.add(ring); pieces.push({ mesh: ring, target: -.38, home: -.21 });
+    pieces.push({ mesh: cylinder(1.08, .1, pale, -.18), target: .03, home: -.18 });
+    const dots = new THREE.Group(); assembly.add(dots);
+    for (let i = 0; i < 13; i++) {
+      const r = i === 0 ? 0 : i < 7 ? .45 : .78;
+      const a = i < 7 ? (i - 1) * Math.PI / 3 : (i - 7) * Math.PI / 3 + Math.PI / 6;
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(i === 0 ? .13 : .085, i === 0 ? .13 : .085, .065, 24), dark);
+      m.position.set(Math.cos(a) * r, 0, Math.sin(a) * r); dots.add(m);
+    }
+    dots.position.y = -.09; pieces.push({ mesh: dots, target: .43, home: -.09 });
+    const grid = new THREE.GridHelper(8, 18, 0xb4c0dc, 0xdce3ef); grid.position.y = -1.68; grid.material.transparent = true; (grid.material as THREE.Material).opacity = .25; scene.add(grid);
+    const resize = () => { const w = el.clientWidth, h = el.clientHeight; camera.aspect = w / h; camera.updateProjectionMatrix(); renderer.setSize(w, h); };
+    const observer = new ResizeObserver(resize); observer.observe(el); resize();
+    let frame = 0, id = 0;
+    const animate = () => { id = requestAnimationFrame(animate); frame += .01; if (spin) assembly.rotation.y += .004; assembly.rotation.x = -.16 + Math.sin(frame * .65) * .04;
+      for (const p of pieces) p.mesh.position.y += ((exploded ? p.target : p.home) - p.mesh.position.y) * .075;
+      renderer.render(scene, camera);
+    }; animate();
+    return () => { cancelAnimationFrame(id); observer.disconnect(); renderer.dispose(); el.removeChild(renderer.domElement); scene.traverse(o => { if (o instanceof THREE.Mesh) o.geometry.dispose(); }); };
+  }, [exploded, spin]);
+  return <div className="scene-wrap"><div className="scene" ref={mount} aria-label="Interactive exploded 3D preview of the Proof of Print medallion" />
+    <div className="scene-label">FIG. 01 <span>PROOF OF PRINT / 3D STUDY</span></div>
+    <div className="scene-tools"><button onClick={() => setExploded(v => !v)}>{exploded ? 'Assemble' : 'Explode view'} <span>↗</span></button><button onClick={() => setSpin(v => !v)}>{spin ? 'Pause rotation' : 'Rotate'} <span>◌</span></button></div>
+    <div className="scene-coordinates">X 00.451<br/>Y 00.920<br/>Z 00.203</div>
+  </div>;
+}
