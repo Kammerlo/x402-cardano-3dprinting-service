@@ -1,24 +1,14 @@
-import { Hono } from "hono";
-import { serve } from "@hono/node-server";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { timingSafeEqual } from "node:crypto";
 
 const env = process.env;
 const API = (env.API_URL || "http://api:8787").replace(/\/$/, "");
 const ROOT = env.STATE_DIR || "/data";
-const PORT = Number(env.PORT || 8790);
 const PRINTS = env.PRINTS_DIR || "/prints";
 let armed = env.ARM_ONCE === "true";
 let active = false;
-const app = new Hono();
-
-function authorized(header: string | undefined) {
-  const provided = Buffer.from((header || "").replace(/^Bearer /i, ""));
-  const expected = Buffer.from(env.GATEWAY_TOKEN || "");
-  return expected.length >= 32 && provided.length === expected.length && timingSafeEqual(provided, expected);
-}
+let lastReadiness = "";
 async function api(path: string, init: RequestInit = {}) {
   const response = await fetch(API + path, { ...init, headers: { authorization: `Bearer ${env.GATEWAY_TOKEN}`, "content-type": "application/json", ...init.headers }, signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error(`API ${path}: ${response.status}`);
@@ -42,9 +32,16 @@ async function run(id: string) {
   if (active || !armed || existsSync(join(ROOT, `${id}.json`))) return;
   active = true; armed = false;
   void heartbeat().catch(e => console.error("Heartbeat failed", e));
+  let completed = false;
+  let claimed = false;
   try {
     const batch = await api(`/api/gateway/batches/${id}`) as { id: string; size: number; status: string };
     if (batch.status !== "QUEUED" || batch.size < 1 || batch.size > 4) throw new Error("Invalid paid batch");
+    // This atomic QUEUED -> DISPATCHING transition is the cloud-side claim.
+    // A second gateway observing the same poll cannot start the same plate.
+    await report(id, "DISPATCHING");
+    claimed = true;
+    await journal(id, "reserved");
     const filename = `proof-token-${batch.size}.gcode`;
     const file = join(PRINTS, filename);
     if (!existsSync(file)) throw new Error(`Pre-sliced U1 file missing: ${file}`);
@@ -52,8 +49,6 @@ async function run(id: string) {
       const status = await moon("/printer/objects/query?print_stats");
       if (status?.result?.status?.print_stats?.state !== "standby" && status?.result?.status?.print_stats?.state !== "complete") throw new Error("Printer is not idle");
     }
-    await journal(id, "reserved");
-    await report(id, "DISPATCHING");
     {
       const form = new FormData();
       form.set("file", new Blob([await readFile(file)], { type: "application/octet-stream" }), `${id}.gcode`);
@@ -76,36 +71,44 @@ async function run(id: string) {
     }
     await journal(id, "printed");
     await report(id, "PRINTED", filename);
+    completed = true;
     console.log(`Batch ${id}: print completed`);
   } catch (cause) {
     console.error(`Batch ${id} needs review`, cause);
-    await journal(id, "needs-review").catch(() => {});
-    await report(id, "NEEDS_REVIEW").catch(() => {});
-  } finally { active = false; void heartbeat().catch(e => console.error("Heartbeat failed", e)); }
+    if (claimed) {
+      await journal(id, "needs-review").catch(() => {});
+      await report(id, "NEEDS_REVIEW").catch(() => {});
+    } else {
+      // Another gateway may own this batch. Never mutate its status.
+      armed = true;
+    }
+  } finally {
+    // The cloud queue will still wait for operator confirmation. Rearming here
+    // only permits the next distinct batch after a verified completion.
+    active = false;
+    if (completed) armed = true;
+    void heartbeat().catch(e => console.error("Heartbeat failed", e));
+  }
 }
 
-app.post("/jobs/:id/accept", c => {
-  if (!authorized(c.req.header("authorization"))) return c.json({ error: "Unauthorized" }, 401);
-  const id = c.req.param("id");
-  if (!/^[0-9a-f-]{36}$/i.test(id)) return c.json({ error: "Invalid job ID" }, 400);
-  if (!armed) return c.json({ accepted: false, reason: "Operator has not armed the printer" }, 409);
-  if (active || existsSync(join(ROOT, `${id}.json`))) return c.json({ accepted: true, alreadySeen: true }, 202);
-  void run(id);
-  return c.json({ accepted: true }, 202);
-});
-app.get("/health", c => c.json({ ok: true, armed, active, printer: "moonraker" }));
-serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" });
-console.log(`Gateway on ${PORT}, armed=${armed}`);
+console.log(`Gateway outbound worker started, armed=${armed}`);
 
-// The cloud API can push immediately. Polling recovers jobs after an offline gateway.
+// The gateway only connects outbound; the cloud cannot call into the home LAN.
 async function heartbeat() {
   let printerReady = false;
+  let operational = false;
+  let printerState = "unknown";
+  const missing = [1,2,3,4].filter(n => !existsSync(join(PRINTS, `proof-token-${n}.gcode`)));
   try {
     const result = await moon("/printer/objects/query?print_stats");
     const state = result?.result?.status?.print_stats?.state;
-    printerReady = ["standby", "complete"].includes(state) && [1,2,3,4].every(n => existsSync(join(PRINTS, `proof-token-${n}.gcode`)));
+    printerState = ["standby","complete","printing","paused","error","cancelled"].includes(state) ? state : "unknown";
+    operational = missing.length === 0 && ["standby","complete","printing","paused"].includes(printerState);
+    printerReady = operational && ["standby", "complete"].includes(printerState);
   } catch (e) { console.error("Printer readiness check failed", e); }
-  await api("/api/gateway/heartbeat", { method: "POST", body: JSON.stringify({ armed: armed && !active, printerReady }) });
+  const readiness = `state=${printerState}, missing plates=${missing.join(",") || "none"}, armed=${armed}, active=${active}`;
+  if (readiness !== lastReadiness) { console.log(`Printer readiness: ${readiness}`); lastReadiness = readiness; }
+  await api("/api/gateway/heartbeat", { method: "POST", body: JSON.stringify({ armed: armed && !active, active, operational, printerReady, printerState }) });
 }
 if (!env.MOONRAKER_URL || !env.GATEWAY_TOKEN || !env.API_URL) throw new Error("API_URL, GATEWAY_TOKEN and MOONRAKER_URL are required");
 void heartbeat().catch(e => console.error("Heartbeat failed", e));

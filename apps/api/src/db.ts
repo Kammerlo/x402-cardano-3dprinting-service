@@ -7,7 +7,7 @@ export async function query<T extends Row = Row>(env: Record<string, string>, sq
   if (env.LOCAL_DATABASE_URL) {
     if (!pool) {
       const { Pool } = await import("pg");
-      pool = new Pool({ connectionString: env.LOCAL_DATABASE_URL, max: 5 });
+      pool = new Pool({ connectionString: env.LOCAL_DATABASE_URL, max: 10, connectionTimeoutMillis: 5_000, idleTimeoutMillis: 30_000, statement_timeout: 15_000 });
     }
     return (await pool.query(sql, params)).rows as T[];
   }

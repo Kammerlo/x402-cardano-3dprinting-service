@@ -35,12 +35,14 @@ app.get("/api/health", c => { const env = config(c), network = networkFor(env); 
 app.get("/api/catalog", async c => {
   const env = config(c), network = networkFor(env);
   if (!network || !env.FACILITATOR_URL || !sellerIsValid(env, network)) return error("Payment configuration incomplete", 503);
-  const settings = await query<{ paused: boolean; gateway_last_seen: string | null; gateway_armed: boolean; printer_ready: boolean }>(env, "SELECT paused, gateway_last_seen, gateway_armed, printer_ready FROM shop_settings WHERE id=1");
+  const settings = await query<{ paused: boolean; gateway_last_seen: string | null; gateway_armed: boolean; gateway_active: boolean; gateway_operational: boolean; printer_ready: boolean; printer_state: string | null; current_status: string | null }>(env,
+    "SELECT s.paused,s.gateway_last_seen,s.gateway_armed,s.gateway_active,s.gateway_operational,s.printer_ready,s.printer_state,b.status AS current_status FROM shop_settings s LEFT JOIN print_batches b ON b.id=s.current_batch_id WHERE s.id=1");
   const paid = await query<{ count: string }>(env, "SELECT count(*)::text AS count FROM orders WHERE status IN ('PAID','BATCHED','PRINTING')");
   const s = settings[0];
   const fresh = !!s?.gateway_last_seen && Date.now() - new Date(s.gateway_last_seen).getTime() < 45_000;
-  const availability = s?.paused ? "operator_paused" : !fresh ? "gateway_offline" : !s.gateway_armed ? "gateway_not_armed" : !s.printer_ready ? "printer_not_ready" : "available";
-  return c.json({ product: { id: "proof-token", name: "Proof of Print", priceLovelace: env.PRICE_LOVELACE || "5000000", maxBatch: 4 }, paused: availability !== "available", availability, printerReady: !!s?.printer_ready, network, payTo: env.SELLER_ADDRESS, pending: Number(paid[0]?.count || 0) });
+  const orphaned = !s?.gateway_active && ["DISPATCHING","PRINTING"].includes(s?.current_status || "");
+  const availability = s?.paused ? "operator_paused" : !fresh ? "gateway_offline" : orphaned ? "batch_needs_review" : !s.gateway_operational ? "printer_not_ready" : !s.gateway_armed && !s.gateway_active ? "gateway_not_armed" : "available";
+  return c.json({ product: { id: "proof-token", name: "Proof of Print", priceLovelace: env.PRICE_LOVELACE || "5000000", maxBatch: 4 }, paused: availability !== "available", availability, printerReady: !!s?.printer_ready, printerState: s?.printer_state, network, payTo: env.SELLER_ADDRESS, pending: Number(paid[0]?.count || 0) });
 });
 app.post("/api/orders", async c => {
   const env = config(c), network = networkFor(env), b = await c.req.json().catch(() => null);
@@ -51,7 +53,10 @@ app.post("/api/orders", async c => {
   const id = crypto.randomUUID(), access = token(), price = env.PRICE_LOVELACE || "5000000";
   if (!/^\d+$/.test(price) || BigInt(price) < 1_000_000n) return error("Price configuration is invalid", 503);
   const rows = await query<{ id: string }>(env, `INSERT INTO orders (id,access_hash,customer_name,email,address_line1,address_line2,postal_code,city,country,price_lovelace,network)
-    SELECT $1,$2,$3,$4,$5,$6,$7,$8,'DE',$9,$10 WHERE (SELECT NOT paused AND gateway_armed AND printer_ready AND gateway_last_seen > now() - interval '45 seconds' FROM shop_settings WHERE id=1)
+    SELECT $1,$2,$3,$4,$5,$6,$7,$8,'DE',$9,$10 WHERE (SELECT NOT s.paused AND s.gateway_operational AND (s.gateway_armed OR s.gateway_active)
+      AND s.gateway_last_seen > now() - interval '45 seconds'
+      AND NOT EXISTS (SELECT 1 FROM print_batches b WHERE b.id=s.current_batch_id AND b.status IN ('DISPATCHING','PRINTING') AND NOT s.gateway_active)
+      FROM shop_settings s WHERE s.id=1)
     RETURNING id`, [id, await digest(access), name, email, line1, line2, postal, city, price, network]);
   if (!rows.length) return error("The printer gateway is unavailable or the shop is paused", 503);
   return c.json({ id, access, status: "AWAITING_PAYMENT", priceLovelace: price, network }, 201);
@@ -68,9 +73,9 @@ app.post("/api/orders/:id/pay", async c => {
   const network = networkFor(env);
   if (!network || network !== o.network || !env.FACILITATOR_URL || !sellerIsValid(env, network)) return error("Payment configuration changed; contact the operator", 503);
   const signature = c.req.header("payment-signature");
+  let signedHash: string | undefined;
   if (signature) {
     if (signature.length > 64_000) return error("Payment payload too large", 413);
-    let signedHash: string;
     try {
       const payload = decodePaymentSignatureHeader(signature);
       if (payload.accepted.network !== network || payload.accepted.payTo !== env.SELLER_ADDRESS || payload.accepted.amount !== o.price_lovelace || payload.accepted.asset !== "lovelace") return error("Signed payment does not match the order", 400);
@@ -94,7 +99,8 @@ app.post("/api/orders/:id/pay", async c => {
   const receiptHeader = c.res.headers.get("PAYMENT-RESPONSE");
   if (!c.res.ok || !receiptHeader) return c.res;
   const receipt = decodePaymentResponseHeader(receiptHeader);
-  if (!receipt.success || receipt.network !== network || !/^[0-9a-f]{64}$/i.test(receipt.transaction)) return error("Invalid settlement receipt", 502);
+  if (!receipt.success || receipt.network !== network || !/^[0-9a-f]{64}$/i.test(receipt.transaction)
+      || !signedHash || receipt.transaction.toLowerCase() !== signedHash.toLowerCase()) return error("Invalid settlement receipt", 502);
   try {
     const rows = await query<{ id: string }>(env, `WITH paid AS (
       UPDATE orders SET status='PAID', tx_hash=$2, paid_at=now(), updated_at=now()
@@ -117,12 +123,34 @@ app.post("/api/orders/:id/pay", async c => {
 app.get("/api/admin/orders", async c => {
   const env = config(c);
   if (!await apiAuth(c.req.header("authorization"), env.ADMIN_TOKEN)) return error("Unauthorized", 401);
-  const rows = await query(env, `SELECT o.id,o.customer_name,o.email,o.address_line1,o.address_line2,o.postal_code,o.city,o.country,o.status,o.network,o.price_lovelace,o.tx_hash,o.batch_id,o.created_at,
-    b.status AS batch_status FROM orders o LEFT JOIN print_batches b ON b.id=o.batch_id ORDER BY o.created_at DESC LIMIT 200`);
-  const batches = await query(env, "SELECT id,status,size,printer_filename,created_at FROM print_batches ORDER BY created_at DESC LIMIT 30");
-  const attempts = await query(env, "SELECT order_id,tx_hash,status,created_at FROM payment_attempts ORDER BY created_at DESC LIMIT 200");
-  const settings = await query(env, "SELECT paused FROM shop_settings WHERE id=1");
-  return c.json({ orders: rows, batches, attempts, paused: settings[0]?.paused });
+  const [rows, batches, attempts, settings] = await Promise.all([
+    query(env, `SELECT o.id,o.customer_name,o.email,o.address_line1,o.address_line2,o.postal_code,o.city,o.country,o.status,o.network,o.price_lovelace,o.tx_hash,o.batch_id,o.created_at,
+    b.status AS batch_status FROM orders o LEFT JOIN print_batches b ON b.id=o.batch_id
+    WHERE o.batch_id=(SELECT current_batch_id FROM shop_settings WHERE id=1)
+       OR o.id IN (SELECT id FROM orders ORDER BY created_at DESC LIMIT 200)
+    ORDER BY o.created_at DESC`),
+    query(env, "SELECT id,status,size,printer_filename,created_at,confirmed_at FROM print_batches ORDER BY created_at DESC LIMIT 100"),
+    query(env, "SELECT order_id,tx_hash,status,created_at FROM payment_attempts ORDER BY created_at DESC LIMIT 200"),
+    query<{ paused: boolean; current_batch_id: string | null }>(env, "SELECT paused,current_batch_id FROM shop_settings WHERE id=1"),
+  ]);
+  const current = settings[0]?.current_batch_id
+    ? await query(env, "SELECT id,status,size,printer_filename,created_at,confirmed_at FROM print_batches WHERE id=$1", [settings[0].current_batch_id])
+    : [];
+  return c.json({ orders: rows, batches, attempts, paused: settings[0]?.paused, currentBatchId: settings[0]?.current_batch_id, currentBatch: current[0] || null });
+});
+app.get("/api/admin/shipping", async c => {
+  const env = config(c); if (!await apiAuth(c.req.header("authorization"), env.ADMIN_TOKEN)) return error("Unauthorized", 401);
+  const cursor = c.req.query("after");
+  const match = cursor?.match(/^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+  if (cursor && (!match || !Number.isFinite(Date.parse(match[1])))) return error("Invalid cursor");
+  const [afterDate, afterId] = match ? [match[1],match[2]] : [null,null];
+  const rows = await query<{ id: string; customer_name: string; email: string; address_line1: string; address_line2: string; postal_code: string; city: string; country: string; batch_id: string; created_at: string; cursor_at: string }>(env,
+    `SELECT id,customer_name,email,address_line1,address_line2,postal_code,city,country,batch_id,created_at,
+       to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at
+     FROM orders WHERE status='PRINTED' AND ($1::timestamptz IS NULL OR (created_at,id)>($1::timestamptz,$2::uuid))
+     ORDER BY created_at,id LIMIT 101`, [afterDate, afterId]);
+  const page = rows.slice(0,100), last = page.at(-1);
+  return c.json({ orders: page.map(({ cursor_at, ...order }) => order), nextCursor: rows.length > 100 && last ? `${last.cursor_at}_${last.id}` : null });
 });
 app.post("/api/admin/pause", async c => {
   const env = config(c); if (!await apiAuth(c.req.header("authorization"), env.ADMIN_TOKEN)) return error("Unauthorized", 401);
@@ -131,34 +159,36 @@ app.post("/api/admin/pause", async c => {
 });
 app.post("/api/admin/batches", async c => {
   const env = config(c); if (!await apiAuth(c.req.header("authorization"), env.ADMIN_TOKEN)) return error("Unauthorized", 401);
-  const id = crypto.randomUUID(), max = Math.min(4, Math.max(1, Number(env.BATCH_SIZE) || 4));
-  const rows = await query<{ id: string; size: number }>(env, `WITH picked AS (
-    SELECT id FROM orders WHERE status='PAID' ORDER BY paid_at LIMIT $1 FOR UPDATE SKIP LOCKED
-  ), batch AS (
-    INSERT INTO print_batches(id,size) SELECT $2,count(*)::int FROM picked HAVING count(*)>0 RETURNING id,size
-  ), moved AS (
-    UPDATE orders SET status='BATCHED',batch_id=$2,updated_at=now() WHERE id IN (SELECT id FROM picked)
-      AND EXISTS (SELECT 1 FROM batch) RETURNING id
-  ) SELECT id,size FROM batch`, [max, id]);
-  if (!rows.length) return error("No paid orders to batch", 409);
-  // Dispatch is best effort. The gateway also polls /api/gateway/next to recover.
-  let dispatched = false;
-  if (env.GATEWAY_URL && env.GATEWAY_TOKEN) {
-    try {
-      const response = await fetch(`${env.GATEWAY_URL.replace(/\/$/, "")}/jobs/${id}/accept`, { method: "POST", headers: {
-        "authorization": `Bearer ${env.GATEWAY_TOKEN}`,
-        "CF-Access-Client-Id": env.ACCESS_CLIENT_ID || "", "CF-Access-Client-Secret": env.ACCESS_CLIENT_SECRET || ""
-      }, signal: AbortSignal.timeout(8_000) });
-      dispatched = response.ok;
-    } catch { /* durable queue remains */ }
+  const max = Math.min(4, Math.max(1, Number(env.BATCH_SIZE) || 4));
+  const rows = await query<{ batch_id: string | null; batch_size: number }>(env, "SELECT batch_id,batch_size FROM advance_print_queue(NULL::uuid,$1)", [max]);
+  if (!rows.length) return error("Another batch is awaiting print or operator confirmation", 409);
+  if (!rows[0].batch_id) return error("No paid orders to batch", 409);
+  return c.json({ batch: { id: rows[0].batch_id, size: rows[0].batch_size }, dispatched: false }, 201);
+});
+app.post("/api/admin/batches/:id/confirm", async c => {
+  const env = config(c); if (!await apiAuth(c.req.header("authorization"), env.ADMIN_TOKEN)) return error("Unauthorized", 401);
+  const body = await c.req.json().catch(() => null);
+  if (body?.inspected !== true || !/^[0-9a-f-]{36}$/i.test(c.req.param("id"))) return error("Confirm that the physical plate and order outcomes were inspected");
+  const max = Math.min(4, Math.max(1, Number(env.BATCH_SIZE) || 4));
+  try {
+    const rows = await query<{ batch_id: string | null; batch_size: number }>(env, "SELECT batch_id,batch_size FROM advance_print_queue($1,$2)", [c.req.param("id"),max]);
+    return c.json({ confirmed: c.req.param("id"), nextBatch: rows[0]?.batch_id ? { id: rows[0].batch_id, size: rows[0].batch_size } : null });
+  } catch (cause) {
+    if (cause instanceof Error && "code" in cause && cause.code === "P0001") return error(cause.message, 409);
+    throw cause;
   }
-  return c.json({ batch: rows[0], dispatched }, 201);
 });
 app.post("/api/admin/orders/:id/status", async c => {
   const env = config(c); if (!await apiAuth(c.req.header("authorization"), env.ADMIN_TOKEN)) return error("Unauthorized", 401);
   const b = await c.req.json().catch(() => null);
   if (!(["SHIPPED", "REFUNDED", "NEEDS_REVIEW"] as unknown[]).includes(b?.status)) return error("Invalid status");
-  const rows = await query(env, "UPDATE orders SET status=$2,updated_at=now() WHERE id=$1 AND status IN ('PRINTED','NEEDS_REVIEW') RETURNING id", [c.req.param("id"), b.status]);
+  const rows = await query(env, `WITH moved AS (
+    UPDATE orders SET status=$2,updated_at=now() WHERE id=$1 AND
+      (status='PRINTED' OR (status='NEEDS_REVIEW' AND $2 IN ('SHIPPED','REFUNDED')))
+    RETURNING id
+  ), recorded AS (
+    INSERT INTO order_events(order_id,kind) SELECT id,$2 FROM moved RETURNING order_id
+  ) SELECT order_id AS id FROM recorded`, [c.req.param("id"), b.status]);
   return rows.length ? c.json({ ok: true }) : error("Invalid transition", 409);
 });
 
@@ -186,13 +216,13 @@ app.post("/api/admin/orders/:id/requeue", async c => {
 app.post("/api/gateway/heartbeat", async c => {
   const env = config(c); if (!await apiAuth(c.req.header("authorization"), env.GATEWAY_TOKEN)) return error("Unauthorized", 401);
   const b = await c.req.json().catch(() => null);
-  if (typeof b?.armed !== "boolean" || typeof b?.printerReady !== "boolean") return error("Invalid heartbeat");
-  await query(env, "UPDATE shop_settings SET gateway_last_seen=now(),gateway_armed=$1,printer_ready=$2 WHERE id=1", [b.armed, b.printerReady]);
+  if (typeof b?.armed !== "boolean" || typeof b?.active !== "boolean" || typeof b?.operational !== "boolean" || typeof b?.printerReady !== "boolean" || !["standby","complete","printing","paused","error","cancelled","unknown"].includes(b?.printerState)) return error("Invalid heartbeat");
+  await query(env, "UPDATE shop_settings SET gateway_last_seen=now(),gateway_armed=$1,gateway_active=$2,gateway_operational=$3,printer_ready=$4,printer_state=$5 WHERE id=1", [b.armed,b.active,b.operational,b.printerReady,b.printerState]);
   return c.json({ ok: true });
 });
 app.get("/api/gateway/next", async c => {
   const env = config(c); if (!await apiAuth(c.req.header("authorization"), env.GATEWAY_TOKEN)) return error("Unauthorized", 401);
-  const rows = await query(env, "SELECT id,size FROM print_batches WHERE status='QUEUED' ORDER BY created_at LIMIT 1");
+  const rows = await query(env, "SELECT b.id,b.size FROM print_batches b JOIN shop_settings s ON s.current_batch_id=b.id WHERE s.id=1 AND b.status='QUEUED' AND b.confirmed_at IS NULL");
   return c.json({ batch: rows[0] || null });
 });
 app.get("/api/gateway/batches/:id", async c => {
