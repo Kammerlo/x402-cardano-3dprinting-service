@@ -46,8 +46,8 @@ BEGIN
     IF v_status IS NULL OR v_status NOT IN ('PRINTED','NEEDS_REVIEW') THEN
       RAISE EXCEPTION 'batch is not complete or reviewed' USING ERRCODE='P0001';
     END IF;
-    IF EXISTS (SELECT 1 FROM orders WHERE batch_id=v_current
-               AND status IN ('BATCHED','PRINTING','NEEDS_REVIEW')) THEN
+    IF EXISTS (SELECT 1 FROM orders o WHERE o.batch_id=v_current
+               AND o.status IN ('BATCHED','PRINTING','NEEDS_REVIEW')) THEN
       RAISE EXCEPTION 'resolve all orders in the batch before confirming' USING ERRCODE='P0001';
     END IF;
     UPDATE print_batches SET confirmed_at=now(),updated_at=now() WHERE id=v_current;
@@ -69,8 +69,8 @@ BEGIN
     IF v_size > 0 THEN
       v_next := gen_random_uuid();
       INSERT INTO print_batches(id,size) VALUES(v_next,v_size);
-      UPDATE orders SET status='BATCHED',batch_id=v_next,updated_at=now()
-      WHERE id=ANY(v_ids) AND status='PAID';
+      UPDATE orders o SET status='BATCHED',batch_id=v_next,updated_at=now()
+      WHERE o.id=ANY(v_ids) AND o.status='PAID';
     END IF;
   END IF;
   UPDATE shop_settings SET current_batch_id=v_next WHERE id=1;

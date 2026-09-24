@@ -16,6 +16,7 @@ type Attempt = { order_id: string; tx_hash: string; status: string; created_at: 
 type Dashboard = {
   orders: Order[]; batches: Batch[]; attempts: Attempt[];
   paused: boolean; currentBatchId: string | null; currentBatch: Batch | null;
+  gateway: { armed: boolean; active: boolean; lastSeen: string | null };
 };
 type ShippingPage = { orders: Order[]; nextCursor: string | null };
 const API = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
@@ -83,6 +84,14 @@ export function Admin({ onClose }: { onClose: () => void }) {
     if (!window.confirm(`Inspect the U1 and the previous plate for ${order.customer_name}. Confirm this order needs a new print and no old job is running?`)) return;
     void action(`/api/admin/orders/${order.id}/requeue`, { confirmedPhysicalReview: true });
   };
+  const reviewStoppedBatch = (batch: Batch) => {
+    if (!window.confirm('Physically verify that the U1 is stopped and inspect its plate and gateway journal. Mark this unfinished batch for review? This does not start another print.')) return;
+    void action(`/api/admin/batches/${batch.id}/review`, { confirmedStopped: true });
+  };
+  const rearmGateway = () => {
+    if (!window.confirm('Physically verify that the U1 is idle, no old job is running and all previous failures were reviewed. Arm the gateway to resume queued work?')) return;
+    void action('/api/admin/gateway/rearm', { confirmedIdle: true });
+  };
   const loadMoreShipping = async () => {
     if (!shipping.nextCursor || busy) return;
     setBusy(true);
@@ -95,6 +104,7 @@ export function Admin({ onClose }: { onClose: () => void }) {
 
   const currentBatch = dashboard?.currentBatch;
   const unresolved = dashboard?.orders.some(order => order.batch_id === currentBatch?.id && ['NEEDS_REVIEW','BATCHED','PRINTING'].includes(order.status));
+  const gatewayOnline = !!dashboard?.gateway.lastSeen && Date.now() - new Date(dashboard.gateway.lastSeen).getTime() < 45_000;
 
   return <main className="admin shell">
     <div className="admin-heading">
@@ -118,13 +128,16 @@ export function Admin({ onClose }: { onClose: () => void }) {
       </div>
       <div className="admin-actions">
         <button disabled={busy || !!dashboard.currentBatchId} onClick={() => void action('/api/admin/batches')}>Create batch (up to 4) ↗</button>
+        <button disabled={busy} onClick={rearmGateway}>Arm / resume gateway</button>
         <button disabled={busy} onClick={() => void action('/api/admin/pause', { paused: !dashboard.paused })}>{dashboard.paused ? 'Resume orders' : 'Pause new orders'}</button>
         <button onClick={() => void refresh(true)}>Refresh</button>
       </div>
+      <p className="fineprint">Gateway: {gatewayOnline ? dashboard.gateway.active ? 'printing' : dashboard.gateway.armed ? 'connected and armed' : 'connected, needs arming' : 'offline'}. Customers can place paid orders while the printer is offline; they remain queued until you restore it.</p>
       {currentBatch && <div className="admin-current-batch">
         <strong>Current plate {currentBatch.id.slice(0,8)} · {currentBatch.status} · {currentBatch.size} objects</strong>
-        <p>The next batch waits until you inspect and confirm this plate.</p>
+        <p>{currentBatch.status === 'QUEUED' ? 'Waiting for the gateway and an idle U1. Use Arm / resume gateway after physical inspection if it is disarmed.' : 'The next batch waits until you inspect and confirm this plate.'}</p>
         {['PRINTED','NEEDS_REVIEW'].includes(currentBatch.status) && <button disabled={busy || unresolved} onClick={() => confirmBatch(currentBatch)}>Confirm plate & queue next four</button>}
+        {['DISPATCHING','PRINTING'].includes(currentBatch.status) && (!gatewayOnline || !dashboard.gateway.active) && <button disabled={busy} onClick={() => reviewStoppedBatch(currentBatch)}>Review stopped / uncertain job</button>}
         {unresolved && <small>Resolve each Needs review order before confirming this plate.</small>}
       </div>}
 

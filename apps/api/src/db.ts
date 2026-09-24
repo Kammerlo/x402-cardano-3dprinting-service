@@ -15,3 +15,8 @@ export async function query<T extends Row = Row>(env: Record<string, string>, sq
   const client = neon(env.DATABASE_URL);
   return (await client.query(sql, params)) as T[];
 }
+
+export async function closeLocalPool() {
+  await pool?.end();
+  pool = undefined;
+}

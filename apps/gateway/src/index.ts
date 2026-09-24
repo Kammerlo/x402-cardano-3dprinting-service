@@ -8,6 +8,7 @@ const ROOT = env.STATE_DIR || "/data";
 const PRINTS = env.PRINTS_DIR || "/prints";
 let armed = env.ARM_ONCE === "true";
 let active = false;
+let canPrint = false;
 let lastReadiness = "";
 async function api(path: string, init: RequestInit = {}) {
   const response = await fetch(API + path, { ...init, headers: { authorization: `Bearer ${env.GATEWAY_TOKEN}`, "content-type": "application/json", ...init.headers }, signal: AbortSignal.timeout(15_000) });
@@ -106,6 +107,7 @@ async function heartbeat() {
     operational = missing.length === 0 && ["standby","complete","printing","paused"].includes(printerState);
     printerReady = operational && ["standby", "complete"].includes(printerState);
   } catch (e) { console.error("Printer readiness check failed", e); }
+  canPrint = printerReady;
   const readiness = `state=${printerState}, missing plates=${missing.join(",") || "none"}, armed=${armed}, active=${active}`;
   if (readiness !== lastReadiness) { console.log(`Printer readiness: ${readiness}`); lastReadiness = readiness; }
   await api("/api/gateway/heartbeat", { method: "POST", body: JSON.stringify({ armed: armed && !active, active, operational, printerReady, printerState }) });
@@ -113,10 +115,20 @@ async function heartbeat() {
 if (!env.MOONRAKER_URL || !env.GATEWAY_TOKEN || !env.API_URL) throw new Error("API_URL, GATEWAY_TOKEN and MOONRAKER_URL are required");
 void heartbeat().catch(e => console.error("Heartbeat failed", e));
 setInterval(() => void heartbeat().catch(e => console.error("Heartbeat failed", e)), 15_000);
-setInterval(async () => {
-  if (!armed || active) return;
+async function pollQueue() {
   try {
-    const response = await api("/api/gateway/next") as { batch?: { id: string } };
-    if (response.batch) await run(response.batch.id);
+    const response = await api("/api/gateway/next") as { batch?: { id: string }; rearmGeneration: string };
+    const generation = BigInt(response.rearmGeneration);
+    const applied = BigInt(await readFile(join(ROOT, "rearm-generation.txt"), "utf8").catch(() => "0"));
+    if (generation > applied) {
+      await mkdir(ROOT, { recursive: true });
+      await writeFile(join(ROOT, "rearm-generation.txt"), String(generation));
+      armed = true;
+      console.log("Operator rearmed the gateway");
+      void heartbeat().catch(e => console.error("Heartbeat failed", e));
+    }
+    if (armed && !active && canPrint && response.batch) await run(response.batch.id);
   } catch (e) { console.error("Queue poll failed", e); }
-}, 15_000);
+}
+void pollQueue();
+setInterval(() => void pollQueue(), 15_000);

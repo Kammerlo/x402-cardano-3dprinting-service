@@ -9,7 +9,7 @@
     "dev": "npm run dev -w @print/api & npm run dev -w @print/web & wait",
     "build": "npm run build -w @print/api && npm run build -w @print/web && npm run build -w @print/gateway",
     "typecheck": "npm run typecheck -w @print/api && npm run typecheck -w @print/web && npm run typecheck -w @print/gateway",
-    "test": "node --test apps/api/test/*.test.mjs"
+    "test": "node --import tsx --test apps/api/test/*.test.mjs"
   },
   "engines": {
     "node": ">=22"

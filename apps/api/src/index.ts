@@ -42,7 +42,7 @@ app.get("/api/catalog", async c => {
   const fresh = !!s?.gateway_last_seen && Date.now() - new Date(s.gateway_last_seen).getTime() < 45_000;
   const orphaned = !s?.gateway_active && ["DISPATCHING","PRINTING"].includes(s?.current_status || "");
   const availability = s?.paused ? "operator_paused" : !fresh ? "gateway_offline" : orphaned ? "batch_needs_review" : !s.gateway_operational ? "printer_not_ready" : !s.gateway_armed && !s.gateway_active ? "gateway_not_armed" : "available";
-  return c.json({ product: { id: "proof-token", name: "Proof of Print", priceLovelace: env.PRICE_LOVELACE || "5000000", maxBatch: 4 }, paused: availability !== "available", availability, printerReady: !!s?.printer_ready, printerState: s?.printer_state, network, payTo: env.SELLER_ADDRESS, pending: Number(paid[0]?.count || 0) });
+  return c.json({ product: { id: "proof-token", name: "Proof of Print", priceLovelace: env.PRICE_LOVELACE || "5000000", maxBatch: 4 }, paused: !!s?.paused, availability, printerReady: !!s?.printer_ready, printerState: s?.printer_state, network, payTo: env.SELLER_ADDRESS, pending: Number(paid[0]?.count || 0) });
 });
 app.post("/api/orders", async c => {
   const env = config(c), network = networkFor(env), b = await c.req.json().catch(() => null);
@@ -53,10 +53,7 @@ app.post("/api/orders", async c => {
   const id = crypto.randomUUID(), access = token(), price = env.PRICE_LOVELACE || "5000000";
   if (!/^\d+$/.test(price) || BigInt(price) < 1_000_000n) return error("Price configuration is invalid", 503);
   const rows = await query<{ id: string }>(env, `INSERT INTO orders (id,access_hash,customer_name,email,address_line1,address_line2,postal_code,city,country,price_lovelace,network)
-    SELECT $1,$2,$3,$4,$5,$6,$7,$8,'DE',$9,$10 WHERE (SELECT NOT s.paused AND s.gateway_operational AND (s.gateway_armed OR s.gateway_active)
-      AND s.gateway_last_seen > now() - interval '45 seconds'
-      AND NOT EXISTS (SELECT 1 FROM print_batches b WHERE b.id=s.current_batch_id AND b.status IN ('DISPATCHING','PRINTING') AND NOT s.gateway_active)
-      FROM shop_settings s WHERE s.id=1)
+    SELECT $1,$2,$3,$4,$5,$6,$7,$8,'DE',$9,$10 WHERE (SELECT NOT paused FROM shop_settings WHERE id=1)
     RETURNING id`, [id, await digest(access), name, email, line1, line2, postal, city, price, network]);
   if (!rows.length) return error("The printer gateway is unavailable or the shop is paused", 503);
   return c.json({ id, access, status: "AWAITING_PAYMENT", priceLovelace: price, network }, 201);
@@ -131,12 +128,13 @@ app.get("/api/admin/orders", async c => {
     ORDER BY o.created_at DESC`),
     query(env, "SELECT id,status,size,printer_filename,created_at,confirmed_at FROM print_batches ORDER BY created_at DESC LIMIT 100"),
     query(env, "SELECT order_id,tx_hash,status,created_at FROM payment_attempts ORDER BY created_at DESC LIMIT 200"),
-    query<{ paused: boolean; current_batch_id: string | null }>(env, "SELECT paused,current_batch_id FROM shop_settings WHERE id=1"),
+    query<{ paused: boolean; current_batch_id: string | null; gateway_armed: boolean; gateway_active: boolean; gateway_last_seen: string | null }>(env, "SELECT paused,current_batch_id,gateway_armed,gateway_active,gateway_last_seen FROM shop_settings WHERE id=1"),
   ]);
   const current = settings[0]?.current_batch_id
     ? await query(env, "SELECT id,status,size,printer_filename,created_at,confirmed_at FROM print_batches WHERE id=$1", [settings[0].current_batch_id])
     : [];
-  return c.json({ orders: rows, batches, attempts, paused: settings[0]?.paused, currentBatchId: settings[0]?.current_batch_id, currentBatch: current[0] || null });
+  return c.json({ orders: rows, batches, attempts, paused: settings[0]?.paused, currentBatchId: settings[0]?.current_batch_id, currentBatch: current[0] || null,
+    gateway: { armed: !!settings[0]?.gateway_armed, active: !!settings[0]?.gateway_active, lastSeen: settings[0]?.gateway_last_seen || null } });
 });
 app.get("/api/admin/shipping", async c => {
   const env = config(c); if (!await apiAuth(c.req.header("authorization"), env.ADMIN_TOKEN)) return error("Unauthorized", 401);
@@ -177,6 +175,36 @@ app.post("/api/admin/batches/:id/confirm", async c => {
     if (cause instanceof Error && "code" in cause && cause.code === "P0001") return error(cause.message, 409);
     throw cause;
   }
+});
+app.post("/api/admin/batches/:id/review", async c => {
+  const env = config(c); if (!await apiAuth(c.req.header("authorization"), env.ADMIN_TOKEN)) return error("Unauthorized", 401);
+  const body = await c.req.json().catch(() => null), id = c.req.param("id");
+  if (body?.confirmedStopped !== true || !/^[0-9a-f-]{36}$/i.test(id)) return error("Confirm that the old printer job is stopped and the physical plate was inspected");
+  const rows = await query<{ id: string }>(env, `WITH reviewed AS (
+    UPDATE print_batches b SET status='NEEDS_REVIEW',updated_at=now()
+    FROM shop_settings s
+    WHERE b.id=$1 AND s.id=1 AND s.current_batch_id=b.id
+      AND b.status IN ('DISPATCHING','PRINTING')
+      AND (s.gateway_active=false OR s.gateway_last_seen < now()-interval '45 seconds')
+    RETURNING b.id
+  ), affected AS (
+    UPDATE orders SET status='NEEDS_REVIEW',updated_at=now()
+    WHERE batch_id IN (SELECT id FROM reviewed) AND status IN ('BATCHED','PRINTING') RETURNING id
+  ), events AS (
+    INSERT INTO order_events(order_id,kind,details)
+    SELECT id,'NEEDS_REVIEW',jsonb_build_object('batch',$1::uuid) FROM affected RETURNING id
+  ) SELECT id FROM reviewed`, [id]);
+  return rows.length ? c.json({ ok: true }) : error("Stop the gateway and inspect the job before reviewing an unfinished batch", 409);
+});
+app.post("/api/admin/gateway/rearm", async c => {
+  const env = config(c); if (!await apiAuth(c.req.header("authorization"), env.ADMIN_TOKEN)) return error("Unauthorized", 401);
+  const body = await c.req.json().catch(() => null);
+  if (body?.confirmedIdle !== true) return error("Confirm the U1 is idle and previous jobs have been reviewed");
+  const rows = await query<{ gateway_rearm_generation: string }>(env, `UPDATE shop_settings s SET gateway_rearm_generation=gateway_rearm_generation+1
+    WHERE s.id=1 AND NOT EXISTS (SELECT 1 FROM print_batches b
+      WHERE b.id=s.current_batch_id AND b.status IN ('DISPATCHING','PRINTING'))
+    RETURNING gateway_rearm_generation::text`, []);
+  return rows.length ? c.json({ queued: true }) : error("Resolve the active print batch before rearming", 409);
 });
 app.post("/api/admin/orders/:id/status", async c => {
   const env = config(c); if (!await apiAuth(c.req.header("authorization"), env.ADMIN_TOKEN)) return error("Unauthorized", 401);
@@ -222,8 +250,9 @@ app.post("/api/gateway/heartbeat", async c => {
 });
 app.get("/api/gateway/next", async c => {
   const env = config(c); if (!await apiAuth(c.req.header("authorization"), env.GATEWAY_TOKEN)) return error("Unauthorized", 401);
-  const rows = await query(env, "SELECT b.id,b.size FROM print_batches b JOIN shop_settings s ON s.current_batch_id=b.id WHERE s.id=1 AND b.status='QUEUED' AND b.confirmed_at IS NULL");
-  return c.json({ batch: rows[0] || null });
+  const rows = await query<{ gateway_rearm_generation: string; id: string | null; size: number | null }>(env,
+    "SELECT s.gateway_rearm_generation::text,b.id,b.size FROM shop_settings s LEFT JOIN print_batches b ON s.current_batch_id=b.id AND b.status='QUEUED' AND b.confirmed_at IS NULL WHERE s.id=1");
+  return c.json({ batch: rows[0]?.id ? { id: rows[0].id, size: rows[0].size } : null, rearmGeneration: rows[0]?.gateway_rearm_generation || "0" });
 });
 app.get("/api/gateway/batches/:id", async c => {
   const env = config(c); if (!await apiAuth(c.req.header("authorization"), env.GATEWAY_TOKEN)) return error("Unauthorized", 401);
