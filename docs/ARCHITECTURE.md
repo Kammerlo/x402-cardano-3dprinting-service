@@ -4,7 +4,7 @@ Status: proposal, 24 September 2026. This document is the plan before implementa
 
 ## Goal
 
-A visitor learns how HTTP 402 and Cardano x402 work, chooses one small physical print, pays on Cardano mainnet, follows the real protocol exchange, and receives an order. A local Snapmaker U1 prints only after confirmed payment and an available, prepared printer. The public system never calls the printer or reveals the home IP, LAN address, camera endpoint, or Moonraker credentials.
+A visitor learns how HTTP 402 and Cardano x402 work, chooses one small physical print, pays on Cardano mainnet, follows the real protocol exchange, and receives an order. A local Snapmaker U1 prints only after confirmed payment and an available, prepared printer. The browser talks only to the public API. The API may call an authenticated home print gateway; it never exposes the home IP, LAN address, camera endpoint, or Moonraker credentials to the browser.
 
 ## Hosting decision
 
@@ -16,7 +16,7 @@ The requested combination of **Vercel free hosting and real sales** is unavailab
 | Public resource server / API | Cloudflare Worker, Hono or Fetch API, Cardano x402 resource server | Vercel Functions on Pro, Node runtime |
 | Database | Neon Free Postgres, HTTP serverless driver | Same |
 | Facilitator | Hosted Cardano mainnet facilitator provided by project | Same |
-| Printer worker | Small Node service on an existing computer at home, outbound HTTPS polling | Same |
+| Printer gateway | Small Node service on an existing computer at home, reached by the API through a protected tunnel; outbound polling is a recovery option | Same |
 | Printer | U1's local Moonraker API, reachable only from home network | Same |
 | Public URL | Free `*.pages.dev` plus `*.workers.dev`, or an owned custom domain | Vercel domain or owned custom domain |
 
@@ -44,13 +44,19 @@ flowchart LR
   B --> A["Public API Worker"]
   A --> F["Hosted facilitator"]
   A --> N["Neon orders"]
-  L["Home print worker"] --> A
-  L --> U["U1 on LAN"]
+  A --> G["Protected home gateway"]
+  G --> U["U1 on LAN"]
 ```
 
-The home worker initiates all connections to the API. There are **no router port forwards, inbound VPN peers, public printer endpoints, public camera streams, or DNS records pointing to the home connection**. The worker's local configuration holds the U1 LAN address and Moonraker credential. Cloud secrets hold database credentials, facilitator credentials, chain-provider key, and worker authentication material. The frontend receives none of these secrets.
+The cloud API calls a dedicated **print gateway**, never Moonraker. A Cloudflare Tunnel publishes only the gateway's narrow HTTP interface through an outbound connection from home; Cloudflare Access requires a machine service token on API-to-gateway requests. There are **no router port forwards, public printer endpoints, public camera streams, or DNS records pointing to the home connection** in this deployment. The gateway's local configuration holds the U1 LAN address and Moonraker credential. Cloud secrets hold database credentials, facilitator credentials, chain-provider key, and gateway authentication material. The frontend receives none of these secrets.
 
-The API is intentionally public for buyers, but only its purchase endpoints are public. Operator and worker endpoints require separate authentication. Order access uses an unguessable, per-order token stored as a hash; a wallet address alone is not an order credential. Rate limits and size limits protect order creation and status polling.
+The API is intentionally public for buyers, but only its purchase endpoints are public. Operator and gateway endpoints require separate authentication. Order access uses an unguessable, per-order token stored as a hash; a wallet address alone is not an order credential. Rate limits and size limits protect order creation and status polling. The gateway accepts only fixed job IDs and allowlisted designs, and retrieves authoritative paid status from the API before it starts the printer; a client cannot submit arbitrary G-code through the public API.
+
+### Cloud API to home print gateway
+
+The visitor's network tab will show the public API hostname and the x402 exchange. The API hostname is hosted in the cloud. Its server-side request to the gateway carries Cloudflare Access service-token headers; those credentials and the gateway hostname stay server-side. The tunnel maps the gateway hostname to a local Node service, which then calls Moonraker over the LAN. This is the direct API-to-home route requested for the purchase flow.
+
+Persist the paid job in Neon **before** making the gateway call. The gateway responds quickly with an idempotent acceptance of the job ID; it reports print progress separately. If the API request ends or the home server is offline, a reconciler retries the queued job, or the gateway polls for undelivered jobs. A unique job ID and conditional state changes prevent a retry from starting another copy. This recovery path is required because a serverless request is not a durable background job.
 
 ## Purchase and print sequence
 
@@ -59,7 +65,7 @@ The API is intentionally public for buyers, but only its purchase endpoints are 
 3. Browser requests the order-specific paid resource, such as `POST /orders/{id}/purchase`. The API returns an actual HTTP **402** with a `PAYMENT-REQUIRED` header for `cardano:mainnet`, the exact asset and amount, seller address, and expiry. The UI decodes a **redacted** view of the real response. An expired quote cannot be reused.
 4. A CIP-30 wallet builds and signs the Cardano transaction. The browser retries that same resource with `PAYMENT-SIGNATURE`. The server delegates verification and settlement to the supplied hosted facilitator. Do not accept an arbitrary tx hash, a frontend success flag, or a mere mempool broadcast as proof of payment.
 5. When the configured confirmation policy is met, the API atomically records the settled transaction hash, paid amount/asset, order ID, and `PAID_QUEUED` state. A unique transaction constraint prevents one payment from purchasing two orders. The server returns the actual `PAYMENT-RESPONSE` receipt. The UI shows the real network exchange and a mainnet explorer link.
-6. The local worker polls `POST /worker/jobs/claim` over outbound HTTPS. An authenticated, atomic claim reserves at most one job. The operator first clears the build plate and arms one print; software checks printer readiness, material mapping, and queue state. It uploads the allowed, locally pre-sliced file through Moonraker and starts it. It reports `PRINTING`, progress, `PRINTED`, or `NEEDS_REVIEW` to the API. Dispatch must never be retried blindly if the printer's response is ambiguous.
+6. After persistence, the API calls the print gateway with an Access service token and the paid job ID. The gateway independently confirms the order is paid. An authenticated, atomic claim reserves at most one job. The operator first clears the build plate and arms one print; software checks printer readiness, material mapping, and queue state. It uploads the allowed, locally pre-sliced file through Moonraker and starts it. It reports `PRINTING`, progress, `PRINTED`, or `NEEDS_REVIEW` to the API. Dispatch must never be retried blindly if the printer's response is ambiguous.
 7. An operator removes and inspects the print, packs it, and marks `READY_TO_SHIP` / `SHIPPED` with tracking or a pickup note. The order page follows each state. Payment buys a print order, not an instant guaranteed artifact.
 
 ### Recovery rules
@@ -90,7 +96,7 @@ Build a polished, responsive studio experience rather than a generic checkout:
 
 Minimum tables: `products`, `orders`, `payment_attempts`, `print_jobs`, and `order_events`. Keep product price and shipping quote immutable per order. Sensitive customer data has restricted access and a defined retention policy; the open-source repository contains only schema/migrations and fake seed data. The operator dashboard has separate authentication and can pause sales, review uncertain payments, inspect jobs, and mark shipments or refunds.
 
-Suggested endpoints: `GET /catalog`, `POST /orders`, `GET /orders/{id}`, `POST /orders/{id}/purchase` (x402), `POST /worker/jobs/claim`, `POST /worker/jobs/{id}/events`, and operator endpoints. Never let the browser directly update paid or printer states.
+Suggested public API endpoints: `GET /catalog`, `POST /orders`, `GET /orders/{id}`, `POST /orders/{id}/purchase` (x402), and authenticated `POST /gateway/jobs/{id}/events` plus operator endpoints. The private home gateway exposes a narrow `POST /jobs/{id}/accept` through Cloudflare Access. A recovery claim endpoint lets the gateway pull queued jobs if the initial API push fails. Never let the browser directly update paid or printer states.
 
 ## Implementation gates
 
@@ -112,3 +118,4 @@ Suggested endpoints: `GET /catalog`, `POST /orders`, `GET /orders/{id}`, `POST /
 - Moonraker file upload and print start: https://moonraker.readthedocs.io/en/latest/external_api/file_manager/ and https://moonraker.readthedocs.io/en/latest/external_api/printer/
 - Cloudflare Tunnel outbound connection model: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/
 - Proxied DNS and potential origin exposure: https://developers.cloudflare.com/dns/proxy-status/ and https://developers.cloudflare.com/learning-paths/prevent-ddos-attacks/advanced/protect-origin-ip/
+- Cloudflare Access service tokens for API-to-gateway authentication: https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/
