@@ -20,7 +20,7 @@ A Cardano x402 storefront that turns an actual CIP-30 wallet payment into a supe
 3. Run `docker compose up --build`. Wait for the gateway heartbeat. Open http://localhost:5173. Select your CIP-30 wallet on the configured network, place an order and confirm the actual transaction. The operator view is at http://localhost:5173/admin with your `ADMIN_TOKEN`.
 4. Create a batch from paid orders while physically supervising the U1. After the one permitted launch, inspect the printer and gateway journal before restarting the gateway to re-arm it.
 
-No public printer port is mapped. The shop blocks new orders when the gateway heartbeat is stale, the printer is not idle, or any required plate file is missing. A previously paid order remains in the durable queue if the gateway goes offline. The Compose migration job applies all idempotent SQL files in order on each start, including upgrades of an existing local volume.
+No public printer port is mapped. Checkout shows **Gateway offline**, **Awaiting operator**, **Printer not ready**, or **Paused by operator** according to the actual condition; it refreshes automatically every 15 seconds. A new local setup will show **Gateway offline** until the first heartbeat. Check `docker compose logs gateway` and the four files in `prints/` when it shows **Printer not ready**. The shop blocks new orders when the gateway heartbeat is stale, the printer is not idle, or any required plate file is missing. A previously paid order remains in the durable queue if the gateway goes offline. The Compose migration job applies all idempotent SQL files in order on each start, including upgrades of an existing local volume.
 
 ```mermaid
 flowchart TD

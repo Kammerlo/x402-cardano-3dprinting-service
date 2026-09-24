@@ -37,8 +37,10 @@ app.get("/api/catalog", async c => {
   if (!network || !env.FACILITATOR_URL || !sellerIsValid(env, network)) return error("Payment configuration incomplete", 503);
   const settings = await query<{ paused: boolean; gateway_last_seen: string | null; gateway_armed: boolean; printer_ready: boolean }>(env, "SELECT paused, gateway_last_seen, gateway_armed, printer_ready FROM shop_settings WHERE id=1");
   const paid = await query<{ count: string }>(env, "SELECT count(*)::text AS count FROM orders WHERE status IN ('PAID','BATCHED','PRINTING')");
-  const ready = !!settings[0]?.gateway_armed && !!settings[0]?.printer_ready && !!settings[0]?.gateway_last_seen && Date.now() - new Date(settings[0].gateway_last_seen).getTime() < 45_000;
-  return c.json({ product: { id: "proof-token", name: "Proof of Print", priceLovelace: env.PRICE_LOVELACE || "5000000", maxBatch: 4 }, paused: !!settings[0]?.paused || !ready, printerReady: ready, network, payTo: env.SELLER_ADDRESS, pending: Number(paid[0]?.count || 0) });
+  const s = settings[0];
+  const fresh = !!s?.gateway_last_seen && Date.now() - new Date(s.gateway_last_seen).getTime() < 45_000;
+  const availability = s?.paused ? "operator_paused" : !fresh ? "gateway_offline" : !s.gateway_armed ? "gateway_not_armed" : !s.printer_ready ? "printer_not_ready" : "available";
+  return c.json({ product: { id: "proof-token", name: "Proof of Print", priceLovelace: env.PRICE_LOVELACE || "5000000", maxBatch: 4 }, paused: availability !== "available", availability, printerReady: !!s?.printer_ready, network, payTo: env.SELLER_ADDRESS, pending: Number(paid[0]?.count || 0) });
 });
 app.post("/api/orders", async c => {
   const env = config(c), network = networkFor(env), b = await c.req.json().catch(() => null);
