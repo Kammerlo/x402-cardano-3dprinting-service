@@ -7,10 +7,11 @@
  * address method.
  */
 import { Buffer } from "buffer";
-import { Address, Assets, Client, Transaction, mainnet, type UTxO } from "@evolution-sdk/evolution";
+import { Address, Assets, Client, Transaction, mainnet, preprod, type UTxO } from "@evolution-sdk/evolution";
 import { LOVELACE_ASSET, parseAssetUnit, type ClientCardanoSigner } from "@x402/cardano";
 
-type Blockfrost = { baseUrl: string; projectId: string };
+export type CardanoNetwork = "cardano:mainnet" | "cardano:preprod";
+type Blockfrost = { baseUrl: string; projectId: string; network: CardanoNetwork };
 
 interface Cip30WalletApi {
   getNetworkId(): Promise<number>;
@@ -32,7 +33,7 @@ async function query(provider: Blockfrost, path: string) {
 }
 
 /**
- * Require live mainnet inputs at all owning addresses and exclude stale
+ * Require live inputs on the chosen network at all owning addresses and exclude stale
  * wallet inputs from fee selection.
  */
 async function liveUtxos(utxos: readonly UTxO.UTxO[], provider: Blockfrost): Promise<UTxO.UTxO[]> {
@@ -43,7 +44,7 @@ async function liveUtxos(utxos: readonly UTxO.UTxO[], provider: Blockfrost): Pro
       const response = await query(provider, `/addresses/${address}/utxos?count=100&page=${page}`);
       if (response.status === 404) break;
       if (!response.ok) {
-        throw new Error(`Blockfrost returned ${response.status} checking mainnet inputs. Try again before signing.`);
+        throw new Error(`Blockfrost returned ${response.status} checking ${provider.network} inputs. Try again before signing.`);
       }
       const rows = (await response.json()) as Array<{ tx_hash: string; output_index: number }>;
       for (const row of rows) live.add(`${row.tx_hash.toLowerCase()}#${row.output_index}`);
@@ -52,7 +53,7 @@ async function liveUtxos(utxos: readonly UTxO.UTxO[], provider: Blockfrost): Pro
   }
   const usable = utxos.filter(u => live.has(ref(u)));
   if (!usable.length) {
-    throw new Error("No live mainnet inputs match your wallet. Fund it or wait for its UTxO cache to refresh.");
+    throw new Error("No live inputs match your wallet. Fund it or wait for its UTxO cache to refresh.");
   }
   return usable;
 }
@@ -62,29 +63,29 @@ export async function createCip30Signer(
   provider: Blockfrost,
 ): Promise<ClientCardanoSigner> {
   if (!provider.projectId?.trim()) {
-    throw new Error("Set VITE_BLOCKFROST_PROJECT_ID to a mainnet project ID and restart the dev server.");
+    throw new Error("Set the matching VITE_BLOCKFROST_*_PROJECT_ID for this network and restart the web server.");
   }
   const api = walletApi as Cip30WalletApi;
   async function checkNetwork() {
-    if ((await api.getNetworkId()) !== 1) {
-      throw new Error("Switch your wallet to Cardano mainnet before paying.");
+    if ((await api.getNetworkId()) !== (provider.network === "cardano:mainnet" ? 1 : 0)) {
+      throw new Error(`Switch your wallet to Cardano ${provider.network.split(":")[1]} before paying.`);
     }
   }
   await checkNetwork();
-  const client = Client.make(mainnet).withBlockfrost(provider).withCip30(walletApi as never);
+  const client = Client.make(provider.network === "cardano:mainnet" ? mainnet : preprod).withBlockfrost(provider).withCip30(walletApi as never);
   const address = Address.toBech32(await client.address());
   return {
     getAddress: () => address,
     async buildAndSignPaymentTransaction(input) {
-      if (input.network !== "cardano:mainnet") {
-        throw new Error("This shop supports Cardano mainnet only.");
+      if (input.network !== provider.network) {
+        throw new Error("Payment network does not match the configured shop network.");
       }
       await checkNetwork();
       if ((input.extra?.assetTransferMethod ?? "default") !== "default") {
         throw new Error("This template supports the default payment method only.");
       }
       const utxos = await client.getWalletUtxos();
-      if (!utxos.length) throw new Error("Your wallet has no inputs. Fund it from the mainnet wallet.");
+      if (!utxos.length) throw new Error("Your wallet has no inputs. Fund it on the selected network.");
       const usable = await liveUtxos(utxos, provider);
       const nonceInput = usable[0];
       const built = await client

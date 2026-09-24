@@ -6,3 +6,5 @@ dist/
 .wrangler/
 *.log
 .DS_Store
+
+prints/*.gcode

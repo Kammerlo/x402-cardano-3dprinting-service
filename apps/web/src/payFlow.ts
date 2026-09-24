@@ -34,6 +34,8 @@ export type FlowOutcome =
   | { status: "unknown"; message: string; transaction?: string };
 
 export interface FlowOptions {
+  network: "cardano:mainnet" | "cardano:preprod";
+  payTo: string;
   asset?: string;
   maxAmount?: string;
   automaticChecks?: number;
@@ -46,7 +48,7 @@ export async function runPaymentFlow(
   url: string,
   signer: ClientCardanoSigner,
   onStep: (step: FlowStep) => void,
-  options: FlowOptions = {},
+  options: FlowOptions,
 ): Promise<FlowOutcome> {
   const asset = options.asset ?? "lovelace";
   const first = await fetch(url, { method: "POST", headers: options.headers, signal: AbortSignal.timeout(15_000) });
@@ -55,11 +57,11 @@ export async function runPaymentFlow(
 
   const http = new x402HTTPClient(
     x402Client.fromConfig({
-      schemes: [{ network: "cardano:mainnet", client: new ExactCardanoScheme(signer) }],
+      schemes: [{ network: options.network, client: new ExactCardanoScheme(signer) }],
       spendControls: {
         allowedAssets: [
           {
-            network: "cardano:mainnet",
+            network: options.network,
             asset,
             maxAmountPerPayment: options.maxAmount ?? "5000000",
           },
@@ -70,7 +72,13 @@ export async function runPaymentFlow(
 
   const required = http.getPaymentRequiredResponse(name => first.headers.get(name));
   onStep({ id: "offer", title: "Read the payment offer", detail: required });
+  if (required.accepts.length !== 1 || !required.accepts.some(offer => offer.network === options.network && offer.amount === (options.maxAmount ?? "5000000") && offer.payTo === options.payTo && offer.asset === asset)) {
+    throw new Error("Payment offer differs from the order price, network or receiving address. Nothing was signed.");
+  }
   const payload = await http.createPaymentPayload(required);
+  if (payload.accepted.network !== options.network || payload.accepted.amount !== (options.maxAmount ?? "5000000") || payload.accepted.payTo !== options.payTo || payload.accepted.asset !== asset) {
+    throw new Error("Signed payment differs from the checked offer. It was not submitted.");
+  }
   onStep({ id: "signed", title: "Wallet signed the transaction", detail: { nonce: String(payload.payload.nonce) } });
 
   const payment: PreparedPayment = {
@@ -132,7 +140,7 @@ async function sendPayment(
       const body = await response.json();
       if (body?.status === "PAID" && body.transaction === transaction) {
         onStep({ id: "settled", title: "Previously settled payment recovered", detail: body });
-        return { status: "settled", body, receipt: { transaction, network: "cardano:mainnet", recovered: true } };
+        return { status: "settled", body, receipt: { transaction, network: payment.payload.accepted.network, recovered: true } };
       }
     } catch { /* keep payment outcome unknown */ }
   }
@@ -158,7 +166,7 @@ async function sendPayment(
     receipt?.errorReason === "exact_cardano_settlement_definitively_rejected" ||
     (receipt?.errorReason === "exact_cardano_settlement_failed" && receipt.extra?.status === "expired")
   ) {
-    return { status: "failed", message: `Payment did not settle (${receipt.errorReason}). You can start a new payment.` };
+    return { status: "failed", message: `Payment did not settle (${receipt.errorReason}). Contact the operator to reconcile this order before attempting another payment.` };
   }
   if (response.status === 402 && !resuming) {
     const requiredHeader = response.headers.get("PAYMENT-REQUIRED");

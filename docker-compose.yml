@@ -1,31 +1,46 @@
+# Real preprod/mainnet payments and a real printer. Copy .env.local.example to .env first.
 services:
   db:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: print
-      POSTGRES_PASSWORD: local-only-password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: print
     volumes:
       - db_data:/var/lib/postgresql/data
-      - ./db/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U print -d print"]
       interval: 3s
       retries: 15
+  migrate:
+    image: postgres:16-alpine
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./db:/migrations:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        for f in /migrations/*.sql; do psql -v ON_ERROR_STOP=1 -h db -U print -d print -f "$$f"; done
   api:
     build: .
     command: npm run dev -w @print/api
     environment:
-      LOCAL_DATABASE_URL: postgresql://print:local-only-password@db:5432/print
-      DEMO_PAYMENT_MODE: "true"
+      LOCAL_DATABASE_URL: postgresql://print:${POSTGRES_PASSWORD}@db:5432/print
+      CARDANO_NETWORK: ${CARDANO_NETWORK:?Set CARDANO_NETWORK}
+      FACILITATOR_URL: ${FACILITATOR_URL:?Set FACILITATOR_URL}
+      SELLER_ADDRESS: ${SELLER_ADDRESS:?Set SELLER_ADDRESS}
       FRONTEND_ORIGIN: http://localhost:5173
-      PRICE_LOVELACE: "5000000"
-      ADMIN_TOKEN: local-admin-token-replace-before-exposure-000001
-      GATEWAY_TOKEN: local-gateway-token-replace-before-exposure-0001
-      GATEWAY_URL: http://gateway:8790
+      PRICE_LOVELACE: ${PRICE_LOVELACE:-5000000}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?Set ADMIN_TOKEN}
+      GATEWAY_TOKEN: ${GATEWAY_TOKEN:?Set GATEWAY_TOKEN}
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "127.0.0.1:8787:8787"
   gateway:
@@ -33,11 +48,14 @@ services:
     command: npm run dev -w @print/gateway
     environment:
       API_URL: http://api:8787
-      GATEWAY_TOKEN: local-gateway-token-replace-before-exposure-0001
-      MOCK_PRINTER: "true"
+      GATEWAY_TOKEN: ${GATEWAY_TOKEN}
+      MOONRAKER_URL: ${MOONRAKER_URL:?Set MOONRAKER_URL reachable from Docker}
+      MOONRAKER_API_KEY: ${MOONRAKER_API_KEY:-}
       ARM_ONCE: "true"
+      PRINTS_DIR: /prints
       STATE_DIR: /data
     volumes:
+      - ./prints:/prints:ro
       - gateway_data:/data
     depends_on:
       - api
@@ -46,6 +64,8 @@ services:
     command: npm run dev -w @print/web
     environment:
       API_PROXY_TARGET: http://api:8787
+      VITE_BLOCKFROST_MAINNET_PROJECT_ID: ${VITE_BLOCKFROST_MAINNET_PROJECT_ID:-}
+      VITE_BLOCKFROST_PREPROD_PROJECT_ID: ${VITE_BLOCKFROST_PREPROD_PROJECT_ID:-}
     depends_on:
       - api
     ports:

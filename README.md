@@ -1,51 +1,36 @@
 # 402 Print Protocol
 
-An experimental Cardano mainnet x402 storefront that turns one payment into one physical 3D printed **Proof of Print** token. The site explains the HTTP 402 exchange, shows the actual payment offer and settlement receipt, and tracks a private order. A separate operator dashboard groups paid orders into plates of up to four.
+A Cardano x402 storefront that turns an actual CIP-30 wallet payment into a supervised Snapmaker U1 print. The site explains HTTP 402, displays the payment conversation, tracks an order, and shows a rotatable 3D token from a centered top view. An operator groups up to four paid orders into one prepared print plate.
 
-> **Launch status:** implementation and local simulation are ready for review. Mainnet payment, the hosted facilitator, your U1's Moonraker endpoint, fulfillment, and the hosting plan must be verified with your own credentials before accepting real orders. The local Docker demo never moves ADA.
-
-## What is inside
+**Network:** Set `CARDANO_NETWORK=cardano:preprod` while validating the flow, then configure `cardano:mainnet` with matching seller and provider credentials for sales. There is no simulated payment or printer path. A configured hosted facilitator and reachable U1 Moonraker service are required even for local Docker.
 
 | Path | Purpose |
-|---|---|
-| `apps/web` | React/Vite storefront for Vercel, Three.js interactive exploded token, CIP-30 mainnet wallet flow and admin dashboard |
-| `apps/api` | Hono x402 API for Cloudflare Workers, Neon persistence, private gateway queue and admin endpoints |
-| `apps/gateway` | Home-hosted printer agent: outbound API poll, optional push endpoint, Moonraker upload/start/status |
-| `model` | Editable OpenSCAD model and binary STL (54 mm one-piece token) |
-| `db` | PostgreSQL schema |
-| `docker-compose.yml` | Local web, API, PostgreSQL, mock printer and simulated payment |
-| `gateway-compose.yml` | Private production gateway, outbound only |
+| --- | --- |
+| `apps/web` | React/Vite storefront and private operator dashboard; Evolution SDK CIP-30 signer |
+| `apps/api` | Hono x402 resource server for Workers or Node, Neon/Postgres orders, settlement journal and gateway queue |
+| `apps/gateway` | Outbound-polling home agent, authenticated to API, with Moonraker upload/start/status |
+| `model` | OpenSCAD source and printable 54 mm STL |
+| `prints` | Operator-sliced 1–4 copy U1 G-code plates (G-code is never committed) |
+| `db` | Schema plus incremental migrations |
 
-## Try the local demo
+## Run locally with real services
 
-```sh
-docker compose up --build
-```
+1. Copy `.env.local.example` to `.env`. Choose preprod or mainnet. Enter your **working hosted facilitator URL**, matching `addr_test1…` or `addr1…` seller address, Blockfrost project ID for that network, and independent random admin/gateway tokens (`openssl rand -hex 32`). Set `MOONRAKER_URL` to your U1's LAN Moonraker endpoint reachable by Docker.
+2. Slice `model/proof-token.stl` with your U1 profile into 1, 2, 3 and 4 copy plates. Place `proof-token-1.gcode` through `proof-token-4.gcode` in `prints/`.
+3. Run `docker compose up --build`. Wait for the gateway heartbeat. Open http://localhost:5173. Select your CIP-30 wallet on the configured network, place an order and confirm the actual transaction. The operator view is at http://localhost:5173/admin with your `ADMIN_TOKEN`.
+4. Create a batch from paid orders while physically supervising the U1. After the one permitted launch, inspect the printer and gateway journal before restarting the gateway to re-arm it.
 
-Open **http://localhost:5173**, order with a sample German address, and press **Simulate HTTP 402 payment**. The trace shows the real HTTP 402 and simulated payment completion. Open **http://localhost:5173/admin** with token `local-admin-token-replace-before-exposure-000001`; create a batch. The mock gateway needs up to 15 seconds to poll and 12 seconds to "print". Its token and the hardcoded database password are **local development only**. Never publish the local ports or reuse these values.
-
-`docker compose down` keeps order and journal volumes; `docker compose down -v` removes them. The gateway is armed for one launch per process. Restart it for the next supervised local batch: `docker compose restart gateway`.
-
-You can also use `npm ci && npm run build` for type checks and a production web build. This repository has no hosted infrastructure or live payment credentials baked into it.
-
-## Mainnet architecture
+No public printer port is mapped. The shop blocks new orders when the gateway heartbeat is stale, the printer is not idle, or any required plate file is missing. A previously paid order remains in the durable queue if the gateway goes offline. The Compose migration job applies all idempotent SQL files in order on each start, including upgrades of an existing local volume.
 
 ```mermaid
 flowchart TD
-  B["Browser + CIP-30 wallet"] --> W["Vercel storefront"]
-  B --> A["Cloudflare Worker API"]
-  A --> F["Hosted x402 facilitator"]
+  B["Browser + CIP-30 wallet"] --> A["Public x402 API"]
+  A --> F["Hosted facilitator"]
   A --> N["Neon PostgreSQL"]
-  G["Home gateway"] -->|"outbound poll and status"| A
-  G -->|"LAN only"| U["U1 Moonraker"]
+  G["Home gateway"] -->|"outbound poll + heartbeat"| A
+  G -->|"LAN"| U["Snapmaker U1"]
 ```
 
-The browser never connects to the printer or home network. The home gateway makes outbound HTTPS requests to the API; **no reverse proxy, port forward, tunnel, or public home address is required**. The API can optionally push to a Cloudflare Tunnel protected by Access, but outbound polling is the recommended initial deployment and leaves `GATEWAY_URL` unset. The API cannot expose a private LAN address it does not know.
+The gateway never receives shipping details. The browser never contacts Moonraker or your home IP. A signed payment is reserved against one order before the facilitator can submit it; interrupted requests retry the same signed transaction, while the operator can inspect the payment attempt. Printing is one-shot with a persistent launch journal to avoid accidental duplicate starts.
 
-The frontend requests an order, calls `POST /api/orders/{id}/pay` and receives HTTP 402. The browser constructs and signs a Cardano mainnet transaction with the first available CIP-30 wallet, then retries using `PAYMENT-SIGNATURE`. The API delegates verification and settlement to the configured hosted facilitator, checks the `PAYMENT-RESPONSE`, and persists the paid order. The private gateway only sees a batch ID, count and status. **It never receives shipping details.** Operator and gateway secrets are distinct.
-
-See [deployment](docs/DEPLOYMENT.md), [operations](docs/OPERATIONS.md), and [security and limits](docs/SECURITY.md).
-
-## Source and licensing
-
-See [LICENSE](LICENSE). Contributions and review welcome. The original Cardano signing/payment flow is adapted from the [Cardano Foundation x402 demo](https://github.com/cardano-foundation/x402-cardano-demo), with attribution in source. The STL is derived from `model/proof-token.scad`.
+See [deployment](docs/DEPLOYMENT.md), [operations](docs/OPERATIONS.md), [architecture](docs/ARCHITECTURE.md) and [security](docs/SECURITY.md). The source is [MIT licensed](LICENSE). The Cardano signing/payment flow is adapted from the [Cardano Foundation x402 demo](https://github.com/cardano-foundation/x402-cardano-demo) with attribution in source.

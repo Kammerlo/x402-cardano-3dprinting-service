@@ -9,7 +9,6 @@ const env = process.env;
 const API = (env.API_URL || "http://api:8787").replace(/\/$/, "");
 const ROOT = env.STATE_DIR || "/data";
 const PORT = Number(env.PORT || 8790);
-const MOCK = env.MOCK_PRINTER === "true";
 const PRINTS = env.PRINTS_DIR || "/prints";
 let armed = env.ARM_ONCE === "true";
 let active = false;
@@ -42,19 +41,20 @@ async function journal(id: string, stage: string) {
 async function run(id: string) {
   if (active || !armed || existsSync(join(ROOT, `${id}.json`))) return;
   active = true; armed = false;
+  void heartbeat().catch(e => console.error("Heartbeat failed", e));
   try {
     const batch = await api(`/api/gateway/batches/${id}`) as { id: string; size: number; status: string };
     if (batch.status !== "QUEUED" || batch.size < 1 || batch.size > 4) throw new Error("Invalid paid batch");
     const filename = `proof-token-${batch.size}.gcode`;
     const file = join(PRINTS, filename);
-    if (!MOCK && !existsSync(file)) throw new Error(`Pre-sliced U1 file missing: ${file}`);
-    if (!MOCK) {
+    if (!existsSync(file)) throw new Error(`Pre-sliced U1 file missing: ${file}`);
+    {
       const status = await moon("/printer/objects/query?print_stats");
       if (status?.result?.status?.print_stats?.state !== "standby" && status?.result?.status?.print_stats?.state !== "complete") throw new Error("Printer is not idle");
     }
     await journal(id, "reserved");
     await report(id, "DISPATCHING");
-    if (!MOCK) {
+    {
       const form = new FormData();
       form.set("file", new Blob([await readFile(file)], { type: "application/octet-stream" }), `${id}.gcode`);
       await moon("/server/files/upload", { method: "POST", body: form });
@@ -64,8 +64,7 @@ async function run(id: string) {
     }
     await journal(id, "started");
     await report(id, "PRINTING", filename);
-    if (MOCK) await new Promise(resolve => setTimeout(resolve, 12_000));
-    else {
+    {
       for (;;) {
         await new Promise(resolve => setTimeout(resolve, 15_000));
         const status = await moon("/printer/objects/query?print_stats");
@@ -82,7 +81,7 @@ async function run(id: string) {
     console.error(`Batch ${id} needs review`, cause);
     await journal(id, "needs-review").catch(() => {});
     await report(id, "NEEDS_REVIEW").catch(() => {});
-  } finally { active = false; }
+  } finally { active = false; void heartbeat().catch(e => console.error("Heartbeat failed", e)); }
 }
 
 app.post("/jobs/:id/accept", c => {
@@ -94,11 +93,23 @@ app.post("/jobs/:id/accept", c => {
   void run(id);
   return c.json({ accepted: true }, 202);
 });
-app.get("/health", c => c.json({ ok: true, armed, active, mock: MOCK }));
+app.get("/health", c => c.json({ ok: true, armed, active, printer: "moonraker" }));
 serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" });
-console.log(`Gateway on ${PORT}, mock=${MOCK}, armed=${armed}`);
+console.log(`Gateway on ${PORT}, armed=${armed}`);
 
 // The cloud API can push immediately. Polling recovers jobs after an offline gateway.
+async function heartbeat() {
+  let printerReady = false;
+  try {
+    const result = await moon("/printer/objects/query?print_stats");
+    const state = result?.result?.status?.print_stats?.state;
+    printerReady = ["standby", "complete"].includes(state) && [1,2,3,4].every(n => existsSync(join(PRINTS, `proof-token-${n}.gcode`)));
+  } catch (e) { console.error("Printer readiness check failed", e); }
+  await api("/api/gateway/heartbeat", { method: "POST", body: JSON.stringify({ armed: armed && !active, printerReady }) });
+}
+if (!env.MOONRAKER_URL || !env.GATEWAY_TOKEN || !env.API_URL) throw new Error("API_URL, GATEWAY_TOKEN and MOONRAKER_URL are required");
+void heartbeat().catch(e => console.error("Heartbeat failed", e));
+setInterval(() => void heartbeat().catch(e => console.error("Heartbeat failed", e)), 15_000);
 setInterval(async () => {
   if (!armed || active) return;
   try {
