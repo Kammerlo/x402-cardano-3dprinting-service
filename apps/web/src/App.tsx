@@ -62,6 +62,21 @@ const savedPayments = (): SavedPayment[] => {
 
 export default function App() {
   const [saved, setSaved] = useState<SavedPayment[]>(savedPayments);
+  const [lookupHash, setLookupHash] = useState("");
+  const [lookupBusy, setLookupBusy] = useState(false);
+  const [lookupMessage, setLookupMessage] = useState("");
+  const [lookupResult, setLookupResult] = useState<{ transaction: string; network: CardanoNetwork; paymentStatus: string; orderStatus: string; chain?: { status: string; confirmations?: number; requiredConfirmations?: number } } | null>(null);
+  const lookupTransaction = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setLookupBusy(true);
+    setLookupMessage("");
+    setLookupResult(null);
+    try {
+      setLookupResult(await request(`/api/transactions/${encodeURIComponent(lookupHash.trim())}`, { signal: AbortSignal.timeout(15_000) }));
+    } catch (error) {
+      setLookupMessage(error instanceof Error ? error.message : "Could not check this transaction. Try again shortly.");
+    } finally { setLookupBusy(false); }
+  };
   const [catalog, setCatalog] = useState<Catalog>();
   const [order, setOrder] = useState<Order | null>(stored);
   const [steps, setSteps] = useState<FlowStep[]>([]);
@@ -342,6 +357,7 @@ export default function App() {
           <a href="#checkout" onClick={() => setMenu(false)}>
             Get yours
           </a>
+          <a href="#transaction-status" onClick={() => setMenu(false)}>Check payment</a>
           <a
             href="/admin"
             onClick={(e) => {
@@ -687,6 +703,11 @@ export default function App() {
                             <small>Signed transaction · settlement unconfirmed</small>
                             <code style={{ display: "block", overflowWrap: "anywhere" }}>{order.signedTransaction}</code>
                             <small>This hash identifies your signed payment; it does not prove it was submitted.</small>
+                            <button type="button" onClick={async () => {
+                              try { await navigator.clipboard.writeText(order.signedTransaction!); setMessage("Transaction hash copied. Keep it to check your order later."); }
+                              catch { setMessage("Select and copy the hash manually to check later."); }
+                            }}>Copy transaction hash</button>
+                            <a href="#transaction-status" onClick={() => setLookupHash(order.signedTransaction!)}>Check this transaction</a>
                           </div>
                         )}
                         {order.transaction && (
@@ -764,7 +785,7 @@ export default function App() {
                           </div>
                         )}
                         {sessionStorage.getItem("print-prepared") && (
-                          <p role="status">Payment confirmation is incomplete. Recheck safely without signing or paying again. Order reference: {order.id}</p>
+                          <p role="status">Payment confirmation is incomplete. You can check again later using your transaction hash below. Orders and signed payments received by our backend stay saved even if you close this tab. Do not sign or pay again. Order reference: {order.id}</p>
                         )}
                         <button className="subtle" onClick={reset} disabled={busy}>
                           {order.paymentFailed ? "Try again with a new order" : "Start another order"}
@@ -795,6 +816,25 @@ export default function App() {
                   </div>
                 </div>
               </div>
+            </section>
+            <section className="shell" id="transaction-status" style={{ paddingBlock: "2rem" }}>
+              <h2>Check your transaction</h2>
+              <p>Enter your transaction hash to check this shop’s payment and print status. No wallet connection is needed.</p>
+              <form onSubmit={lookupTransaction} className="order-form">
+                <label>Transaction hash
+                  <input value={lookupHash} onChange={(event) => { setLookupHash(event.target.value); setLookupResult(null); setLookupMessage(""); }} required pattern="[a-fA-F0-9]{64}" maxLength={64} placeholder="64-character transaction hash" disabled={lookupBusy} />
+                </label>
+                <button className="primary" disabled={lookupBusy}>{lookupBusy ? "CHECKING…" : "CHECK TRANSACTION STATUS"}</button>
+              </form>
+              {lookupMessage && <p role="alert">{lookupMessage}</p>}
+              {lookupResult && <div role="status">
+                <p>Payment: <strong>{lookupResult.paymentStatus === "SETTLED" ? "Recorded as settled" : "Awaiting payment confirmation"}</strong></p>
+                <p>Order: <strong>{lookupResult.orderStatus.replaceAll("_", " ")}</strong></p>
+                <a href={txUrl(lookupResult.transaction, lookupResult.network)} target="_blank" rel="noreferrer">View transaction on explorer ↗</a>
+                <p>Blockchain check: <strong>{({ CONFIRMED: "Verified on-chain", CONFIRMING: "On-chain, waiting for more confirmations", NOT_FOUND: "Not visible to the blockchain provider yet", MISMATCH: "Payment needs operator review", UNAVAILABLE: "Blockchain provider temporarily unavailable", NOT_CONFIGURED: "Automatic blockchain checking is not configured yet", CHECK_AGAIN: "A recent check is running or just finished. Check again in 15 seconds", RECORDED: "Payment already recorded" } as Record<string, string>)[lookupResult.chain?.status || ""]}</strong></p>
+                {lookupResult.chain?.confirmations !== undefined && <p>Confirmation depth: {lookupResult.chain.confirmations} / {lookupResult.chain.requiredConfirmations}</p>}
+                <p>You can close this page and check again later using this hash. Orders and signed payments received by our backend remain saved. Do not pay again while confirmation is pending.</p>
+              </div>}
             </section>
             <section className="faq shell">
               <div>

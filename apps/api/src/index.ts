@@ -5,6 +5,7 @@ import { secureHeaders } from "hono/secure-headers";
 import { query } from "./db";
 import { installAdminAuth } from "./adminAuth";
 import { processPayment } from "./payment";
+import { verifyOnChain, type ChainOrder, type ChainEvidence } from "./chainPayment";
 import {
   type Env,
   type Order,
@@ -216,6 +217,49 @@ app.get("/api/orders/:id", async (c) => {
   return o ? c.json(safeOrder(o)) : error("Order not found", 404);
 });
 
+// A transaction hash is public, but customer/order credentials are not.
+app.get("/api/transactions/:hash", async (c) => {
+  const hash = c.req.param("hash").toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(hash)) return error("Enter a 64-character transaction hash");
+  const env = config(c);
+  const [order] = await query<{ id: string; status: string; network: string; tx_hash: string | null; price_lovelace: string }>(
+    env,
+    `SELECT o.id,o.status,o.network,o.tx_hash,o.price_lovelace FROM orders o
+     WHERE o.tx_hash=$1 OR o.id IN (SELECT order_id FROM payment_attempts WHERE tx_hash=$1) LIMIT 1`,
+    [hash],
+  );
+  if (!order) return error("No order is linked to this transaction yet. This does not mean the transaction failed on-chain.", 404);
+  let chain: ChainEvidence | { status: "CHECK_AGAIN" | "RECORDED" } = { status: "RECORDED" };
+  if (!order.tx_hash && order.status === "AWAITING_PAYMENT") {
+    const [attempt] = await query<{ signed_payload: string }>(env,
+      `UPDATE payment_attempts SET chain_check_after=now()+interval '15 seconds'
+       WHERE order_id=$1 AND tx_hash=$2 AND (chain_check_after IS NULL OR chain_check_after<now())
+       RETURNING signed_payload`, [order.id, hash]);
+    chain = attempt ? await verifyOnChain(env, { ...order, tx_hash: hash, signed_payload: attempt.signed_payload } as ChainOrder) : { status: "CHECK_AGAIN" };
+    if (chain.status === "CONFIRMED") {
+      await query(env, `WITH paid AS (
+        UPDATE orders SET status='PAID',tx_hash=$2,paid_at=now(),updated_at=now()
+        WHERE id=$1 AND status='AWAITING_PAYMENT' AND tx_hash IS NULL RETURNING id
+      ), attempt AS (
+        UPDATE payment_attempts SET status='SETTLED' WHERE order_id IN (SELECT id FROM paid) AND tx_hash=$2 RETURNING id
+      ), event AS (
+        INSERT INTO order_events(order_id,kind,details)
+        SELECT id,'CHAIN_SETTLEMENT',jsonb_build_object('transaction',$2::text,'source','blockfrost','confirmations',$3::int) FROM paid RETURNING id
+      ) SELECT id FROM paid`, [order.id, hash, chain.confirmations]);
+    }
+    const [latest] = await query<{ status: string; tx_hash: string | null }>(env, "SELECT status,tx_hash FROM orders WHERE id=$1", [order.id]);
+    order.status = latest.status;
+    order.tx_hash = latest.tx_hash;
+  }
+  return c.json({
+    transaction: hash,
+    network: order.network,
+    paymentStatus: order.tx_hash === hash ? "SETTLED" : "UNCONFIRMED",
+    orderStatus: order.status,
+    chain,
+  });
+});
+
 app.post("/api/orders/:id/pay", async (c) => {
   const env = config(c),
     id = c.req.param("id"),
@@ -252,6 +296,32 @@ app.post("/api/admin/orders/:id/reconcile", async (c) => {
     { env },
   );
   return processPayment(paymentContext, env, id, o, attempt.signed_payload);
+});
+
+app.post("/api/admin/orders/:id/settle", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json().catch(() => null);
+  const hash = typeof body?.transaction === "string" ? body.transaction.trim().toLowerCase() : "";
+  if (!/^[a-f0-9-]{36}$/i.test(id) || !/^[a-f0-9]{64}$/.test(hash) || body?.confirmedOnChain !== true)
+    return error("Confirm the stored transaction was verified on-chain before recording settlement");
+  // An operator attestation, not a fabricated facilitator receipt. Match the
+  // existing attempt and serialize against reconciliation before releasing stock.
+  const rows = await query<{ id: string }>(config(c),
+    `WITH attempt AS (
+       SELECT order_id,tx_hash FROM payment_attempts
+       WHERE order_id=$1 AND tx_hash=$2 AND (lease_until IS NULL OR lease_until<now()) FOR UPDATE
+     ), paid AS (
+       UPDATE orders o SET status='PAID',tx_hash=$2,paid_at=now(),updated_at=now()
+       FROM attempt a WHERE o.id=a.order_id AND o.status='AWAITING_PAYMENT' AND o.tx_hash IS NULL
+       RETURNING o.id
+     ), marked AS (
+       UPDATE payment_attempts SET status='SETTLED' WHERE order_id IN (SELECT id FROM paid) RETURNING order_id
+     ), event AS (
+       INSERT INTO order_events(order_id,kind,details)
+       SELECT id,'MANUAL_SETTLEMENT',jsonb_build_object('transaction',$2::text,'source','operator_verified_on_chain') FROM paid RETURNING id
+     ) SELECT id FROM paid`, [id, hash]);
+  if (!rows.length) return error("Order is already settled, the hash does not match, or a payment check is running. Refresh and try again after the check finishes.", 409);
+  return c.json({ id, status: "PAID", transaction: hash, recordedBy: "operator" });
 });
 
 app.get("/api/admin/orders", async (c) => {

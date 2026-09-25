@@ -58,6 +58,7 @@ export interface FlowOptions {
   maxAmount?: string;
   automaticChecks?: number;
   retryDelayMs?: number;
+  confirmationTimeoutMs?: number;
   headers?: Record<string, string>;
   onPrepared?: (payment: PreparedPayment) => void;
 }
@@ -194,44 +195,66 @@ export async function runPaymentFlow(
   };
 
   options.onPrepared?.(payment);
-  const limit = Math.min(
-    5,
-    Math.max(0, Math.trunc(options.automaticChecks ?? 3)),
-  );
-  let outcome = await sendPayment(payment, onStep, false);
-  let checks = 0;
-  while (
-    (outcome.status === "pending" || outcome.status === "unknown") &&
-    checks < limit
-  ) {
-    onStep({
-      id: "pending",
-      title: `Recheck ${checks + 1} of ${limit} scheduled`,
-      detail: {
-        delayMs: options.retryDelayMs ?? 5_000,
-        action: "Reuse the original signed payment",
-      },
-    });
-    await new Promise((resolve) =>
-      setTimeout(resolve, options.retryDelayMs ?? 5_000),
-    );
-    checks++;
-    outcome = await sendPayment(payment, onStep, true);
-  }
-  return outcome;
+  return pollPayment(payment, onStep, false, options);
 }
+
+type PollOptions = Pick<FlowOptions, "automaticChecks" | "retryDelayMs" | "confirmationTimeoutMs">;
+export const CONFIRMATION_TIMEOUT_MS = 10 * 60_000;
+export const CONFIRMATION_RETRY_DELAY_MS = 15_000;
 
 export async function resumePaymentFlow(
   payment: PreparedPayment,
   onStep: (step: FlowStep) => void,
+  options: PollOptions = {},
 ): Promise<FlowOutcome> {
-  return sendPayment(payment, onStep, true);
+  return pollPayment(payment, onStep, true, options);
+}
+
+async function pollPayment(
+  payment: PreparedPayment,
+  onStep: (step: FlowStep) => void,
+  resuming: boolean,
+  options: PollOptions,
+): Promise<FlowOutcome> {
+  const limit = Math.min(120, Math.max(0, Math.trunc(options.automaticChecks ?? 40)));
+  const duration = Math.min(CONFIRMATION_TIMEOUT_MS, Math.max(1, options.confirmationTimeoutMs ?? CONFIRMATION_TIMEOUT_MS));
+  const delay = Math.max(0, options.retryDelayMs ?? CONFIRMATION_RETRY_DELAY_MS);
+  const deadline = Date.now() + duration;
+  let outcome = await sendPayment(payment, onStep, resuming, Math.min(240_000, duration));
+  let checks = 0;
+  while ((outcome.status === "pending" || outcome.status === "unknown") && checks < limit) {
+    const remaining = deadline - Date.now();
+    if (remaining <= delay) break;
+    onStep({
+      id: "pending",
+      title: `Waiting for confirmation · check ${checks + 1} of ${limit}`,
+      detail: {
+        delayMs: delay,
+        remainingSeconds: Math.ceil(remaining / 1000),
+        action: "Your payment may already be on-chain. Rechecking the original transaction; do not pay again.",
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    // Background tabs may wake much later than requested.
+    const requestBudget = deadline - Date.now();
+    if (requestBudget <= 0) break;
+    checks++;
+    outcome = await sendPayment(payment, onStep, true, Math.min(240_000, requestBudget));
+  }
+  if (outcome.status === "pending" || outcome.status === "unknown") {
+    return {
+      ...outcome,
+      message: "Confirmation is taking longer than expected. Your transaction may already be on-chain, but the payment service has not confirmed it yet. Your signed payment is saved in this tab. Use Check payment status to keep checking without making another payment.",
+    };
+  }
+  return outcome;
 }
 
 export async function sendPayment(
   payment: PreparedPayment,
   onStep: (step: FlowStep) => void,
   resuming: boolean,
+  requestTimeoutMs = 240_000,
 ): Promise<FlowOutcome> {
   onStep({
     id: "pay",
@@ -264,7 +287,7 @@ export async function sendPayment(
     response = await fetch(payment.url, {
       method: "POST",
       headers: payment.headers,
-      signal: AbortSignal.timeout(240_000),
+      signal: AbortSignal.timeout(Math.max(1, Math.floor(requestTimeoutMs))),
     });
   } catch {
     return unknown(
@@ -409,6 +432,6 @@ export async function sendPayment(
     return { status: "failed", message: `Payment rejected: ${reason}` };
   }
   return unknown(
-    `Payment status is not confirmed yet (HTTP ${response.status}).`,
+    `The payment service has not confirmed the transaction yet (HTTP ${response.status}). It may already be on-chain; keep checking the same payment.`,
   );
 }
