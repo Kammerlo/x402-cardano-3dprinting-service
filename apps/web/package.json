@@ -1,0 +1,6 @@
+{
+  "name": "@print/web", "private": true, "type": "module",
+  "scripts": { "dev": "vite --host 0.0.0.0", "build": "tsc --noEmit && vite build", "typecheck": "tsc --noEmit" },
+  "dependencies": { "@evolution-sdk/evolution": "0.5.9", "@x402/cardano": "2.26.0", "@x402/core": "2.26.0", "buffer": "^6.0.3", "lucide-react": "^0.468.0", "react": "^19.2.0", "react-dom": "^19.2.0", "three": "^0.180.0" },
+  "devDependencies": { "@types/node": "^22.18.0", "@types/react": "^19.0.0", "@types/react-dom": "^19.0.0", "@types/three": "^0.180.0", "typescript": "^5.9.0", "vite": "^7.1.0" }
+}
