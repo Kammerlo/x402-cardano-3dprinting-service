@@ -34,6 +34,7 @@ type Dashboard = {
   orders: Order[];
   batches: Batch[];
   totals: Record<string, number>;
+  paymentRequiredWithTxCount: number;
   paused: boolean;
   currentBatch: Batch | null;
   currentBatchId: string | null;
@@ -249,7 +250,9 @@ export function Admin({ onClose }: { onClose: () => void }) {
   const visible =
     dashboard?.orders.filter(
       (order) =>
-        (!tab || order.status === tab) &&
+        (!tab || (tab === "PAYMENT_REQUIRED_WITH_TX"
+          ? order.status === "AWAITING_PAYMENT" && !!order.signed_tx_hash
+          : order.status === tab)) &&
         (!search ||
           `${order.id} ${order.customer_name} ${order.email} ${order.tx_hash || ""} ${order.signed_tx_hash || ""}`
             .toLowerCase()
@@ -547,6 +550,7 @@ export function Admin({ onClose }: { onClose: () => void }) {
             <div className="desk-tabs" role="group" aria-label="Filter orders">
               {[
                 ["PAID", "Waiting"],
+                ["PAYMENT_REQUIRED_WITH_TX", "Payment required · TX hash"],
                 ["PRINTED", "Ready to send"],
                 ["SHIPPED", "Sent"],
                 ["NEEDS_REVIEW", "Needs attention"],
@@ -559,7 +563,9 @@ export function Admin({ onClose }: { onClose: () => void }) {
                 >
                   {label}{" "}
                   <b>
-                    {value
+                    {value === "PAYMENT_REQUIRED_WITH_TX"
+                      ? dashboard.paymentRequiredWithTxCount || 0
+                      : value
                       ? dashboard.totals[value] || 0
                       : Object.values(dashboard.totals).reduce(
                           (a, b) => a + b,
@@ -577,7 +583,7 @@ export function Admin({ onClose }: { onClose: () => void }) {
                 value={search}
                 onChange={(event) => {
                   setSearch(event.target.value);
-                  if (event.target.value) setTab("");
+                  if (event.target.value && tab !== "PAYMENT_REQUIRED_WITH_TX") setTab("");
                   setOffset(0);
                 }}
               />
