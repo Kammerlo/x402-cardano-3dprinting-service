@@ -1,7 +1,12 @@
 {
+  "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "x402-print-api",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
-  "vars": { "FRONTEND_ORIGIN": "https://YOUR-PAGES-SITE.pages.dev", "CARDANO_NETWORK": "cardano:preprod", "PRICE_LOVELACE": "5000000" }
+  "assets": {
+    "directory": "../web/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  }
 }
