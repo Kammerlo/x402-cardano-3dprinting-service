@@ -10,6 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { Admin } from "./Admin";
+import { ProtocolTrace } from "./ProtocolTrace";
 const ModelScene = lazy(() =>
   import("./ModelScene").then((m) => ({ default: m.ModelScene })),
 );
@@ -25,51 +26,12 @@ type Order = {
   transaction?: string | null;
   network: CardanoNetwork;
 };
-type Availability =
-  | "available"
-  | "operator_paused"
-  | "gateway_offline"
-  | "gateway_not_armed"
-  | "printer_not_ready"
-  | "batch_needs_review";
 type Catalog = {
   product: { priceLovelace: string; maxBatch: number };
   paused: boolean;
-  availability: Availability;
-  printerState: string | null;
   network: CardanoNetwork;
   payTo: string;
   pending: number;
-};
-const availabilityText: Record<
-  Availability,
-  { label: string; detail: string }
-> = {
-  available: { label: "AVAILABLE", detail: "" },
-  operator_paused: {
-    label: "PAUSED BY OPERATOR",
-    detail: "The operator has temporarily paused new orders.",
-  },
-  gateway_offline: {
-    label: "PRINTER OFFLINE · ORDERS OPEN",
-    detail:
-      "You can pay now. Your order will wait in the queue until the operator restores the home gateway and printer; printing and shipping may take longer.",
-  },
-  gateway_not_armed: {
-    label: "AWAITING OPERATOR · ORDERS OPEN",
-    detail:
-      "Paid orders can join the queue. The operator must inspect and arm the gateway before the next print starts.",
-  },
-  printer_not_ready: {
-    label: "PRINTER NOT READY · ORDERS OPEN",
-    detail:
-      "You can pay now. Your print waits until the U1 and its prepared plate files are ready; fulfillment may take longer.",
-  },
-  batch_needs_review: {
-    label: "JOB UNDER REVIEW · ORDERS OPEN",
-    detail:
-      "The previous print needs operator review. Paid orders are queued safely and printing resumes only after inspection.",
-  },
 };
 const API = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
 const request = async (path: string, init?: RequestInit) => {
@@ -220,7 +182,7 @@ export default function App() {
       const outcome = await runPaymentFlow(
         `${API}/api/orders/${order.id}/pay`,
         signer,
-        (step) => setSteps((s) => [...s, step]),
+        (step) => setSteps((s) => [...s, { ...step, at: Date.now() }]),
         {
           network: catalog.network,
           payTo: catalog.payTo,
@@ -246,6 +208,18 @@ export default function App() {
           `${outcome.message}${"transaction" in outcome && outcome.transaction ? ` Transaction: ${outcome.transaction}` : ""}`,
         );
     } catch (err) {
+      setSteps((previous) => [
+        ...previous,
+        {
+          id: sessionStorage.getItem("print-prepared") ? "unknown" : "failed",
+          title: "Payment flow interrupted",
+          at: Date.now(),
+          detail: {
+            action:
+              "Check the message shown with your order before continuing.",
+          },
+        },
+      ]);
       setMessage(String(err instanceof Error ? err.message : err));
     } finally {
       setBusy(false);
@@ -269,7 +243,7 @@ export default function App() {
         );
       const { resumePaymentFlow } = await import("./payFlow");
       const outcome = await resumePaymentFlow(prepared, (step) =>
-        setSteps((s) => [...s, step]),
+        setSteps((s) => [...s, { ...step, at: Date.now() }]),
       );
       if (outcome.status === "settled") {
         sessionStorage.removeItem("print-prepared");
@@ -284,6 +258,17 @@ export default function App() {
         );
       } else setMessage(outcome.message);
     } catch (e) {
+      setSteps((previous) => [
+        ...previous,
+        {
+          id: "unknown",
+          title: "Payment recheck interrupted",
+          at: Date.now(),
+          detail: {
+            action: "Keep the original payment and check the order message.",
+          },
+        },
+      ]);
       setMessage(String(e));
     } finally {
       setBusy(false);
@@ -525,21 +510,16 @@ export default function App() {
                     <div className="panel-top">
                       <span>YOUR ORDER / 001</span>
                       <span>
-                        ●{" "}
                         {catalog
-                          ? catalog.availability === "available" &&
-                            catalog.printerState === "printing"
-                            ? "PRINTING · ORDERS OPEN"
-                            : availabilityText[catalog.availability].label
-                          : "CHECKING"}
+                          ? catalog.paused
+                            ? "● ORDERS PAUSED"
+                            : "● ORDERS OPEN"
+                          : "CHECKING SHOP"}
                       </span>
                     </div>
-                    {catalog && catalog.availability !== "available" && (
+                    {catalog?.paused && (
                       <div className="availability-note" role="status">
-                        <strong>
-                          {availabilityText[catalog.availability].label}
-                        </strong>
-                        <p>{availabilityText[catalog.availability].detail}</p>
+                        New orders are temporarily paused.
                       </div>
                     )}
                     <div className="product-row">
@@ -732,39 +712,11 @@ export default function App() {
                       <span>LIVE PROTOCOL TRACE</span>
                       <span className="live-indicator">● LIVE</span>
                     </div>
-                    <div className="terminal">
-                      <div className="terminal-title">
-                        <span className="terminal-dots">● ● ●</span>{" "}
-                        payment.session{" "}
-                        <span>
-                          {catalog?.network?.split(":")[1].toUpperCase() ||
-                            "NETWORK"}
-                        </span>
-                      </div>
-                      {steps.length ? (
-                        steps.map((s, i) => (
-                          <div className="trace-step" key={`${s.id}-${i}`}>
-                            <span className="trace-index">
-                              {String(i + 1).padStart(2, "0")}
-                            </span>
-                            <div>
-                              <strong>{s.title}</strong>
-                              {"detail" in s && (
-                                <pre>{JSON.stringify(s.detail, null, 2)}</pre>
-                              )}
-                            </div>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="terminal-empty">
-                          <span className="cursor">▌</span>
-                          <p>
-                            Your live HTTP conversation will appear here when
-                            you pay.
-                          </p>
-                        </div>
-                      )}
-                    </div>
+                    <ProtocolTrace
+                      steps={steps}
+                      network={catalog?.network}
+                      busy={busy}
+                    />
                     <div className="trace-foot">
                       <ShieldCheck size={18} /> The server never sees your
                       wallet keys. Your delivery address is visible only to the
