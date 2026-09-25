@@ -2,6 +2,7 @@
 services:
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: print
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
@@ -28,14 +29,18 @@ services:
         for f in /migrations/*.sql; do psql -v ON_ERROR_STOP=1 -h db -U print -d print -f "$$f"; done
   api:
     build: .
-    command: npm run dev -w @print/api
+    command: npm run start -w @print/api
+    restart: unless-stopped
+    stop_grace_period: 5m
     environment:
+      NODE_OPTIONS: --max-http-header-size=98304
       LOCAL_DATABASE_URL: postgresql://print:${POSTGRES_PASSWORD}@db:5432/print
       CARDANO_NETWORK: ${CARDANO_NETWORK:?Set CARDANO_NETWORK}
       FACILITATOR_URL: ${FACILITATOR_URL:?Set FACILITATOR_URL}
       SELLER_ADDRESS: ${SELLER_ADDRESS:?Set SELLER_ADDRESS}
-      FRONTEND_ORIGIN: http://localhost:5173
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
       PRICE_LOVELACE: ${PRICE_LOVELACE:-5000000}
+      ADMIN_ALLOW_INSECURE_LOCALHOST: ${ADMIN_ALLOW_INSECURE_LOCALHOST:-false}
       ADMIN_TOKEN: ${ADMIN_TOKEN:?Set ADMIN_TOKEN}
       GATEWAY_TOKEN: ${GATEWAY_TOKEN:?Set GATEWAY_TOKEN}
     depends_on:
@@ -51,13 +56,13 @@ services:
       - "127.0.0.1:8787:8787"
   gateway:
     build: .
-    command: npm run dev -w @print/gateway
+    command: npm run start -w @print/gateway
+    restart: unless-stopped
     environment:
       API_URL: http://api:8787
       GATEWAY_TOKEN: ${GATEWAY_TOKEN}
       MOONRAKER_URL: ${MOONRAKER_URL:?Set MOONRAKER_URL reachable from Docker}
       MOONRAKER_API_KEY: ${MOONRAKER_API_KEY:-}
-      ARM_ONCE: "true"
       PRINTS_DIR: /prints
       STATE_DIR: /data
     volumes:
@@ -67,16 +72,19 @@ services:
       api:
         condition: service_healthy
   web:
-    build: .
-    command: npm run dev -w @print/web
-    environment:
-      API_PROXY_TARGET: http://api:8787
-      VITE_BLOCKFROST_MAINNET_PROJECT_ID: ${VITE_BLOCKFROST_MAINNET_PROJECT_ID:-}
-      VITE_BLOCKFROST_PREPROD_PROJECT_ID: ${VITE_BLOCKFROST_PREPROD_PROJECT_ID:-}
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        VITE_BLOCKFROST_MAINNET_PROJECT_ID: ${VITE_BLOCKFROST_MAINNET_PROJECT_ID:-}
+        VITE_BLOCKFROST_PREPROD_PROJECT_ID: ${VITE_BLOCKFROST_PREPROD_PROJECT_ID:-}
+    restart: unless-stopped
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     ports:
-      - "127.0.0.1:5173:5173"
+      - "127.0.0.1:5173:8080"
+
 volumes:
   db_data:
   gateway_data:

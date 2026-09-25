@@ -1,6 +1,6 @@
 # 402 Print Protocol
 
-A Cardano x402 storefront that turns an actual CIP-30 wallet payment into a supervised Snapmaker U1 print. The site explains HTTP 402, displays the payment conversation, tracks an order, and shows a rotatable 3D token from a centered top view. An operator groups up to four paid orders into one prepared print plate. The private `/admin` dashboard shows delivery details, country, a paginated shipping queue and print states. After each plate, the operator confirms its physical result before the backend assigns the next four paid orders. Reviewed failures can return to a new batch without another payment.
+A Cardano x402 storefront that turns an actual CIP-30 wallet payment into a supervised Snapmaker U1 print. The site explains HTTP 402, displays the payment conversation, tracks an order, and shows a rotatable 3D token from a centered top view. The admin starts supervised plates sized automatically from the available G-code files. The private `/admin` dashboard shows delivery details, country, a paginated shipping queue and print states. After each plate, the operator removes the prints, confirms that the plate is empty, and clicks **Start the next batch**. Reviewed failures can return to a new batch without another payment.
 
 **Network:** Set `CARDANO_NETWORK=cardano:preprod` while validating the flow, then configure `cardano:mainnet` with matching seller and provider credentials for sales. There is no simulated payment or printer path. A configured hosted facilitator is required to settle payments. The U1 Moonraker service can be temporarily offline: paid jobs wait until it returns.
 
@@ -10,17 +10,17 @@ A Cardano x402 storefront that turns an actual CIP-30 wallet payment into a supe
 | `apps/api` | Hono x402 resource server for Workers or Node, Neon/Postgres orders, settlement journal and gateway queue |
 | `apps/gateway` | Outbound-polling home agent, authenticated to API, with Moonraker upload/start/status |
 | `model` | OpenSCAD source and printable 54 mm STL |
-| `prints` | Operator-sliced 1–4 copy U1 G-code plates (G-code is never committed) |
+| `prints` | Operator-sliced U1 G-code plates with dynamic batch sizes (G-code is never committed) |
 | `db` | Schema plus incremental migrations |
 
 ## Run locally with real services
 
 1. Copy `.env.local.example` to `.env`. Choose preprod or mainnet. Enter your **working hosted facilitator URL**, matching `addr_test1…` or `addr1…` seller address, Blockfrost project ID for that network, and independent random admin/gateway tokens (`openssl rand -hex 32`). Set `MOONRAKER_URL` to your U1's LAN Moonraker endpoint reachable by Docker.
-2. Slice `model/proof-token.stl` with your U1 profile into 1, 2, 3 and 4 copy plates. Place `proof-token-1.gcode` through `proof-token-4.gcode` in `prints/`.
-3. Run `docker compose up --build`. Wait for the gateway heartbeat. Open http://localhost:5173. Select your CIP-30 wallet on the configured network, place an order and confirm the actual transaction. The operator view is at http://localhost:5173/admin with your `ADMIN_TOKEN`.
-4. Create the first batch from paid orders while physically supervising the U1. After the gateway reports a completed plate, inspect the print and click **Confirm plate & queue next four** in `/admin`. The gateway rearms after a confirmed printer completion; the database keeps the next job gated until your confirmation. A failed or ambiguous print remains disarmed and requires manual review before restarting the gateway.
+2. Slice your chosen plate sizes and place `proof-token-N.gcode` in `prints/`, where N is the actual object count. Include a 1-object file for small queues.
+3. For local HTTP only, set `FRONTEND_ORIGIN=http://localhost:5173` and `ADMIN_ALLOW_INSECURE_LOCALHOST=true`. Production requires your HTTPS origin. Run `docker compose up --build`. Wait for the gateway heartbeat. Open http://localhost:5173. Select your CIP-30 wallet on the configured network, place an order and confirm the actual transaction. The operator view is at http://localhost:5173/admin with your `ADMIN_TOKEN`.
+4. Sign into `/admin`, inspect and empty the U1 plate, tick the confirmation, then click **Start the next batch**. The API checks readiness and selects the largest available batch that fits the paid queue. No further plate starts until you confirm it is empty again. Use **Ready to send → Mark as sent** for fulfillment; recovery tools are under **More actions**.
 
-No public printer port is mapped or opened by the gateway process. Checkout shows the actual printer state and refreshes every 15 seconds. **A printer or gateway outage does not block checkout or payment**: paid orders wait in the database until the operator recovers the printer. The operator can pause sales manually in `/admin`. Checkout tells buyers that an offline printer delays fulfillment. Check `docker compose logs gateway` and the four files in `prints/` when it shows **Printer not ready**. The Compose migration job applies all idempotent SQL files in order on each start, including upgrades of an existing local volume.
+No public printer port is mapped or opened by the gateway process. Printer readiness is an operator concern; the storefront only shows whether orders are open or paused. **A printer or gateway outage does not block checkout or payment**: paid orders wait in the database until the operator recovers the printer. The operator can pause sales manually in `/admin`. The live protocol trace shows timestamped payment events, offer checks, wallet signing, HTTP responses and settlement details. Check `docker compose logs gateway` and the batch files in `prints/` when it shows **Printer not ready**. The Compose migration job applies all idempotent SQL files in order on each start, including upgrades of an existing local volume.
 
 If the gateway reports `ECONNREFUSED ...:8787`, check `docker compose ps` and `docker compose logs --tail=100 api migrate`. This is the gateway-to-API connection, separate from the U1. Compose waits for `/api/health` before starting the gateway. A later connection failure means the API became unavailable and requires inspection of its logs.
 
@@ -34,5 +34,7 @@ flowchart TD
 ```
 
 The gateway never receives shipping details. The browser never contacts Moonraker or your home IP. A signed payment is reserved against one order before the facilitator can submit it; interrupted requests retry the same signed transaction, while the operator can inspect the payment attempt. Batch creation and confirmation are serialized under a Postgres row lock. The gateway claims a queued batch atomically and journals it before upload/start to avoid accidental duplicate launches. An ambiguous start is never retried automatically.
+
+The production review and remaining launch checks are in [production review](docs/PRODUCTION_REVIEW.md). Compose serves a compiled frontend through Nginx.
 
 See [deployment](docs/DEPLOYMENT.md), [operations](docs/OPERATIONS.md), [architecture](docs/ARCHITECTURE.md) and [security](docs/SECURITY.md). The source is [MIT licensed](LICENSE). The Cardano signing/payment flow is adapted from the [Cardano Foundation x402 demo](https://github.com/cardano-foundation/x402-cardano-demo) with attribution in source.

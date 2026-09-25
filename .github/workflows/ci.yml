@@ -29,3 +29,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - name: Validate production web image
+        run: |
+          docker build -f Dockerfile.web -t print-web-test .
+          docker run --rm --add-host api:127.0.0.1 print-web-test nginx -t
