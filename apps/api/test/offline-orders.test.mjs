@@ -21,7 +21,7 @@ test('accepts an order and issues a real x402 offer while the printer is offline
         LOCAL_DATABASE_URL: databaseUrl.toString(), CARDANO_NETWORK: 'cardano:preprod',
         FACILITATOR_URL: 'https://facilitator.test',
         SELLER_ADDRESS: 'addr_test1qql5hvzueatjwcztktp2h005s7jyl4rs52w7cfdu7tpplkvjpmre5rzpp3qt2sj6hxnksl6spm8at2y4cc8mvflxw6xj7h76jm',
-        ADMIN_TOKEN: 'a'.repeat(64), GATEWAY_TOKEN: 'b'.repeat(64),
+        ADMIN_ALLOW_BEARER: "true", FRONTEND_ORIGIN: "https://shop.test", ADMIN_TOKEN: 'a'.repeat(64), GATEWAY_TOKEN: 'b'.repeat(64),
       };
       const { default: app } = await import('../src/index.ts');
       const { closeLocalPool } = await import('../src/db.ts');

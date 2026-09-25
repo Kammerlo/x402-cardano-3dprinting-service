@@ -2,12 +2,13 @@ import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { durableWrite, repeat } from "./journal";
+import { availablePlates } from "./plates";
 
 const env = process.env;
 const API = (env.API_URL || "http://api:8787").replace(/\/$/, "");
 const ROOT = env.STATE_DIR || "/data";
 const PRINTS = env.PRINTS_DIR || "/prints";
-let armed = env.ARM_ONCE === "true";
+let armed = false;
 let active = false;
 let canPrint = false;
 let lastReadiness = "";
@@ -56,7 +57,6 @@ async function run(id: string) {
   active = true;
   armed = false;
 
-  let completed = false;
   let claimed = false;
   try {
     const batch = (await api(`/api/gateway/batches/${id}`)) as {
@@ -64,7 +64,11 @@ async function run(id: string) {
       size: number;
       status: string;
     };
-    if (batch.status !== "QUEUED" || batch.size < 1 || batch.size > 4)
+    if (
+      batch.status !== "QUEUED" ||
+      !Number.isInteger(batch.size) ||
+      !(await availablePlates(PRINTS)).includes(batch.size)
+    )
       throw new Error("Invalid paid batch");
     // This atomic QUEUED -> DISPATCHING transition is the cloud-side claim.
     // A second gateway observing the same poll cannot start the same plate.
@@ -92,6 +96,13 @@ async function run(id: string) {
       );
       await moon("/server/files/upload", { method: "POST", body: form });
       await journal(id, "uploaded");
+      const beforeStart = await moon("/printer/objects/query?print_stats");
+      if (
+        !["standby", "complete"].includes(
+          beforeStart?.result?.status?.print_stats?.state,
+        )
+      )
+        throw new Error("Printer stopped being idle during upload");
       // An interrupted response here is ambiguous. The journal prevents an automatic second start.
       await moon(
         `/printer/print/start?filename=${encodeURIComponent(`${id}.gcode`)}`,
@@ -114,7 +125,6 @@ async function run(id: string) {
     }
     await journal(id, "printed");
     await report(id, "PRINTED", filename);
-    completed = true;
     console.log(`Batch ${id}: print completed`);
   } catch (cause) {
     console.error(`Batch ${id} needs review`, cause);
@@ -126,10 +136,9 @@ async function run(id: string) {
       armed = true;
     }
   } finally {
-    // The cloud queue will still wait for operator confirmation. Rearming here
-    // only permits the next distinct batch after a verified completion.
+    // Every plate requires a fresh, short-lived operator authorization.
     active = false;
-    if (completed) armed = true;
+    armed = false;
   }
 }
 
@@ -140,9 +149,7 @@ async function heartbeat() {
   let printerReady = false;
   let operational = false;
   let printerState = "unknown";
-  const missing = [1, 2, 3, 4].filter(
-    (n) => !existsSync(join(PRINTS, `proof-token-${n}.gcode`)),
-  );
+  const batchSizes = await availablePlates(PRINTS);
   try {
     const result = await moon("/printer/objects/query?print_stats");
     const state = result?.result?.status?.print_stats?.state;
@@ -157,7 +164,7 @@ async function heartbeat() {
       ? state
       : "unknown";
     operational =
-      missing.length === 0 &&
+      batchSizes.length > 0 &&
       ["standby", "complete", "printing", "paused"].includes(printerState);
     printerReady =
       operational && ["standby", "complete"].includes(printerState);
@@ -165,7 +172,7 @@ async function heartbeat() {
     console.error("Printer readiness check failed", e);
   }
   canPrint = printerReady;
-  const readiness = `state=${printerState}, missing plates=${missing.join(",") || "none"}, armed=${armed}, active=${active}`;
+  const readiness = `state=${printerState}, available batch sizes=${batchSizes.join(",") || "none"}, armed=${armed}, active=${active}`;
   if (readiness !== lastReadiness) {
     console.log(`Printer readiness: ${readiness}`);
     lastReadiness = readiness;
@@ -178,6 +185,7 @@ async function heartbeat() {
       operational,
       printerReady,
       printerState,
+      batchSizes,
     }),
   });
 }
@@ -197,22 +205,12 @@ async function pollQueue() {
       batch?: { id: string };
       rearmGeneration: string;
     };
-    const generation = BigInt(response.rearmGeneration);
-    const applied = BigInt(
-      await readFile(join(ROOT, "rearm-generation.txt"), "utf8").catch(
-        () => "0",
-      ),
-    );
-    if (generation > applied && !active && canPrint) {
-      await durableWrite(
-        join(ROOT, "rearm-generation.txt"),
-        String(generation),
-      );
+    // The API only exposes a queued batch for 60 seconds after an explicit
+    // plate-empty confirmation. Recheck the physical printer before starting.
+    if (!active && canPrint && response.batch) {
       armed = true;
-      console.log("Operator rearmed the gateway");
-    }
-    if (armed && !active && canPrint && response.batch)
       await run(response.batch.id);
+    }
   } catch (e) {
     console.error("Queue poll failed", e);
   }

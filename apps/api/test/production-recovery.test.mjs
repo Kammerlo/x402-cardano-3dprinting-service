@@ -43,6 +43,8 @@ test(
         LOCAL_DATABASE_URL: databaseUrl.toString(),
         CARDANO_NETWORK: "cardano:preprod",
         FACILITATOR_URL: "https://facilitator.test",
+        ADMIN_ALLOW_BEARER: "true",
+        FRONTEND_ORIGIN: "https://shop.test",
         ADMIN_TOKEN: "a".repeat(64),
         GATEWAY_TOKEN: "b".repeat(64),
         SELLER_ADDRESS:
@@ -175,15 +177,26 @@ test(
       );
       assert.equal(reconciled.status, 200, await reconciled.clone().text());
       assert.equal(settlements, 1);
-      const batch = (await (await req("/api/admin/batches", {})).json()).batch;
+      await db.query(
+        "UPDATE shop_settings SET gateway_last_seen=now(),printer_ready=true,printer_state='standby',available_batch_sizes=ARRAY[1,4] WHERE id=1",
+      );
+      const batch = (
+        await (
+          await req("/api/admin/print/start-next", {
+            plateEmpty: true,
+            expectedBatchId: null,
+          })
+        ).json()
+      ).batch;
       assert.ok(batch.id);
       assert.equal(
         (
-          await req(`/api/admin/batches/${batch.id}/confirm`, {
-            inspected: true,
+          await req(`/api/admin/print/start-next`, {
+            plateEmpty: false,
+            expectedBatchId: batch.id,
           })
         ).status,
-        409,
+        400,
       );
       for (const status of ["DISPATCHING", "PRINTING", "PRINTED"])
         assert.equal(
@@ -223,11 +236,12 @@ test(
         ).status,
         200,
       );
-      const confirmed = await req(`/api/admin/batches/${batch.id}/confirm`, {
-        inspected: true,
+      const confirmed = await req(`/api/admin/print/start-next`, {
+        plateEmpty: true,
+        expectedBatchId: batch.id,
       });
       assert.equal(confirmed.status, 200);
-      const next = (await confirmed.json()).nextBatch;
+      const next = (await confirmed.json()).batch;
       assert.notEqual(next.id, batch.id);
       const found = await (
         await req("/api/admin/orders?search=recover%40example.com")

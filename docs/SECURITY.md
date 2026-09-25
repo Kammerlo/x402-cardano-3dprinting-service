@@ -1,12 +1,30 @@
-# Security boundaries and limits
+# Admin security and deployment boundary
 
-- The browser never receives `DATABASE_URL`, facilitator URL credentials, `ADMIN_TOKEN`, `GATEWAY_TOKEN`, printer API key, home address or printer LAN URL. It necessarily sees the seller payment address in the x402 offer and the public Blockfrost project ID.
-- Customer address and email live in Neon. Only bearer-authenticated admin endpoints return them. The gateway receives a batch ID and count, not personal details. An order status lookup needs the high-entropy secret returned when the order is created; only its SHA-256 hash is stored.
-- `ADMIN_TOKEN` and `GATEWAY_TOKEN` must be independent 32+ character random secrets. Protect the dashboard with Cloudflare Access as defense in depth if possible. Rotate on compromise. Local Docker values are intentionally public and never suitable for production.
-- The gateway has **no inbound listener**. It polls outbound over HTTPS. Avoid port forwarding the printer or gateway.
-- The gateway claims each batch once and keeps a persistent journal. It rearms after a verified completed print, but the next batch is gated by explicit admin confirmation. A network interruption around print start is ambiguous, so the gateway disarms rather than trying again. The operator resolves it manually in the admin dashboard and confirms the U1 is idle before issuing a rearm command. A batch can remain stuck if the gateway fails after the cloud claim but before reporting its result; review logs and printer before marking it for review.
-- Signed mainnet payment is kept in browser session storage until settlement is confirmed. A browser tab closed or storage cleared during an ambiguous settlement requires manual operator reconciliation. The API currently relies on facilitator behavior for same-transaction retries and does not run independent Cardano chain monitoring. Do not operate unattended.
-- There is no payment or printer simulation path. Local Docker requires the configured hosted facilitator for settlement; offline printer jobs remain queued until the actual Moonraker endpoint returns. A signed transaction is journaled before facilitator submission and limited to one per order. Its payload is sensitive operational data in Neon and must be retained only as needed for reconciliation.
-- Checkout remains open when the printer is offline. The operator is responsible for monitoring the paid backlog and pausing sales if fulfillment cannot be completed promptly. An admin confirmation is an operational assertion; the cloud API cannot independently prove that a disconnected physical printer is idle.
-- No mailer, tax invoice, privacy retention automation, shipping label system, anti-spam rate limiter, or independent facilitator monitoring is included. Set a rate limit on `/api/orders`, publish contact/terms/privacy information, and verify applicable commerce requirements before taking public orders.
-- Never commit `.env`, `.env.gateway`, Neon data, `.gcode` with embedded printer details, secrets or customer information. The checked in STL and SCAD are safe public model assets.
+The admin can change paid orders and authorize physical printing. Automated tests exercise the security controls; no application can be guaranteed unbreakable.
+
+## Authentication
+
+- Generate **independent 64-character random hex** `ADMIN_TOKEN` and `GATEWAY_TOKEN` values with `openssl rand -hex 32`. Missing, malformed or identical credentials fail closed on the corresponding privileged API.
+- Admin login exchanges the access key for a random server-side session. The cookie is `__Host-print-admin`, `Secure`, `HttpOnly`, `SameSite=Strict`, `Path=/`, and expires after eight hours. Only the session hash is stored in Postgres. The access key is not kept in browser storage. A credential fingerprint invalidates sessions when `ADMIN_TOKEN` changes.
+- State-changing admin requests require the session, a per-session CSRF token and an exact `Origin` match against `FRONTEND_ORIGIN`. Sign-out revokes the server session; “Sign out all admin sessions” revokes every session. The UI also locks and attempts revocation after 15 minutes without interaction; if disconnected, the server's eight-hour expiry remains the fallback.
+- Login is limited to 20 attempts/minute across the database. Bundled Nginx also limits login by source IP (5/minute, burst 5). Configure trusted-proxy real-IP handling or an edge rule when behind a reverse proxy; do not trust client-supplied forwarding headers. Global throttling can temporarily deny legitimate login during an attack, so restrict admin access at the edge.
+- Bearer admin access is **disabled by default**. `ADMIN_ALLOW_BEARER=true` is an explicit non-browser automation opt-in that bypasses cookie/CSRF authentication; leave it unset for normal operation. Gateway credentials never authorize admin endpoints.
+- Admin mutations create an audit record before execution, with route, hashed-session tag, time and resulting HTTP status. The audit does not store credentials, request bodies or customer data. A record with no result indicates interruption; reconcile actual state before repeating a physical action.
+
+These controls follow the [OWASP session management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html) and [CSRF prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html) guidance. They are not an independent penetration-test certification.
+
+## Deployment requirements
+
+Serve the admin frontend and `/api/admin/*` on the **same HTTPS origin**, using the included Nginx proxy or equivalent. Set `FRONTEND_ORIGIN` to that exact origin, without a trailing slash. A separate Vercel/Workers cross-site admin deployment must proxy the admin API through the frontend origin; do not weaken cookies to work around it. Restrict `/admin` and `/api/admin/*` with your VPN or an access proxy with MFA for Internet-facing deployments. Keep gateway access separate from that interactive login policy.
+
+Local development only: `ADMIN_ALLOW_INSECURE_LOCALHOST=true` permits an HTTP origin at localhost/127.0.0.1 and a separate non-Secure development cookie. It is ignored for other hostnames. Never enable it for a public origin. HTTPS, proxy access rules, OS updates, database protection and backups remain operator responsibilities.
+
+Nginx serves a Content Security Policy, no framing, nosniff and no-referrer headers. React renders customer input as text. No arbitrary G-code upload, shell commands, or Moonraker URL editing is exposed to the admin. Keep dependencies and container images patched.
+
+## Physical and payment boundaries
+
+Every start requires a confirmed empty plate, a recent idle heartbeat and an available batch file. The database serializes starts and accepts the expected current plate ID, preventing a stale dashboard from advancing another plate. Start permission expires after 60 seconds; the gateway rechecks Moonraker before upload and immediately before launch. An ambiguous start is not automatically repeated. The API cannot sense whether a plate is physically empty: that remains the operator's assertion.
+
+The gateway has no inbound listener and receives no shipping details. Do not forward Moonraker or printer ports to the Internet. Preserve gateway journals through restarts and recovery. Someone holding the gateway secret or controlling the printer LAN is inside the printer-control trust boundary; rotate credentials on compromise.
+
+Orders and signed attempts remain in Postgres. Public order lookup requires a high-entropy order secret; only its hash is stored. Signed payments use the official x402 SDK and same-transaction reconciliation. No private wallet keys enter the backend. Rate-limit new public orders, protect backups containing customer details/signed attempts, and configure retention and monitoring appropriate to your deployment.
