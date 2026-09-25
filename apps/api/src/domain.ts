@@ -7,6 +7,7 @@ export type Order = {
   network: Network;
   price_lovelace: string;
   tx_hash: string | null;
+  signed_tx_hash?: string | null;
   batch_id: string | null;
   created_at: string;
 };

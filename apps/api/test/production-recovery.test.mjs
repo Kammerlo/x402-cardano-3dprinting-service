@@ -102,8 +102,24 @@ test(
             extensions: [],
             signers: {},
           });
-        if (path.endsWith("/verify"))
+        if (path.endsWith("/verify")) {
+          // The hash must be linked and searchable before any submission occurs.
+          const pending = await app.request(`http://localhost/api/orders/${order.id}`, {
+            headers: { "x-order-secret": order.access },
+          }, env);
+          const pendingOrder = await pending.json();
+          assert.equal(pendingOrder.signedTransaction, hash);
+          assert.equal(pendingOrder.transaction, null);
+          assert.equal(pendingOrder.status, "AWAITING_PAYMENT");
+          const dashboard = await req(`/api/admin/orders?search=${hash}`);
+          const matched = (await dashboard.json()).orders.find((item) => item.id === order.id);
+          assert.ok(matched, "signed hash search finds the pending order");
+          assert.equal(matched.signed_tx_hash, hash);
+          assert.equal(matched.tx_hash, null);
+          assert.equal(matched.signed_payload, undefined);
+          assert.equal(settlements, 0);
           return Response.json({ isValid: true, payer: env.SELLER_ADDRESS });
+        }
         if (path.endsWith("/settle")) {
           settlements++;
           await new Promise((r) => setTimeout(r, 100));

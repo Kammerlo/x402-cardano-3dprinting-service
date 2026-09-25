@@ -25,6 +25,7 @@ type Order = {
   status: string;
   priceLovelace: string;
   transaction?: string | null;
+  signedTransaction?: string | null;
   network: CardanoNetwork;
   paymentFailed?: boolean;
 };
@@ -112,7 +113,7 @@ export default function App() {
           if (!active) return;
           if (o.status !== "AWAITING_PAYMENT")
             sessionStorage.removeItem("print-prepared");
-          setOrder((prev) => (prev?.id === o.id ? { ...prev, ...o } : prev));
+          setOrder((prev) => (prev?.id === o.id ? { ...prev, ...o, signedTransaction: o.signedTransaction || prev.signedTransaction } : prev));
         })
         .catch(() => {});
     tick();
@@ -199,8 +200,10 @@ export default function App() {
           payTo: catalog.payTo,
           maxAmount: order.priceLovelace,
           headers: { "x-order-secret": order.access },
-          onPrepared: (prepared) =>
-            sessionStorage.setItem("print-prepared", JSON.stringify(prepared)),
+          onPrepared: (prepared) => {
+            sessionStorage.setItem("print-prepared", JSON.stringify(prepared));
+            setOrder((prev) => prev ? { ...prev, signedTransaction: prepared.transaction } : prev);
+          },
         },
       );
       releaseResolvedPayment(sessionStorage, outcome);
@@ -679,6 +682,13 @@ export default function App() {
                           Status:{" "}
                           <strong>{order.status.replaceAll("_", " ")}</strong>
                         </p>
+                        {order.signedTransaction && !order.transaction && (
+                          <div>
+                            <small>Signed transaction · settlement unconfirmed</small>
+                            <code style={{ display: "block", overflowWrap: "anywhere" }}>{order.signedTransaction}</code>
+                            <small>This hash identifies your signed payment; it does not prove it was submitted.</small>
+                          </div>
+                        )}
                         {order.transaction && (
                           <a
                             className="text-link"
