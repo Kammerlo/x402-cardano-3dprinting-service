@@ -226,7 +226,7 @@ export async function resumePaymentFlow(
   return sendPayment(payment, onStep, true);
 }
 
-async function sendPayment(
+export async function sendPayment(
   payment: PreparedPayment,
   onStep: (step: FlowStep) => void,
   resuming: boolean,
@@ -390,10 +390,10 @@ async function sendPayment(
     });
     return {
       status: "failed",
-      message: `Payment did not settle (${receipt.errorReason}). Contact the operator to reconcile this order before attempting another payment.`,
+      message: `Payment did not settle (${receipt.errorReason}). You can start a new order and try again.`,
     };
   }
-  if (response.status === 402 && !resuming) {
+  if (response.status === 402 && !receiptHeader && !resuming) {
     const requiredHeader = response.headers.get("PAYMENT-REQUIRED");
     let reason = "Payment was rejected before submission.";
     if (requiredHeader) {

@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { Admin } from "./Admin";
 import { ProtocolTrace } from "./ProtocolTrace";
+import { releaseResolvedPayment } from "./paymentRecovery";
 const ModelScene = lazy(() =>
   import("./ModelScene").then((m) => ({ default: m.ModelScene })),
 );
@@ -25,6 +26,7 @@ type Order = {
   priceLovelace: string;
   transaction?: string | null;
   network: CardanoNetwork;
+  paymentFailed?: boolean;
 };
 type Catalog = {
   product: { priceLovelace: string; maxBatch: number };
@@ -51,7 +53,14 @@ const stored = (): Order | null => {
   }
 };
 
+type SavedPayment = { order: Order; prepared: string };
+const savedPayments = (): SavedPayment[] => {
+  try { return JSON.parse(sessionStorage.getItem("print-saved-payments") || "[]"); }
+  catch { return []; }
+};
+
 export default function App() {
+  const [saved, setSaved] = useState<SavedPayment[]>(savedPayments);
   const [catalog, setCatalog] = useState<Catalog>();
   const [order, setOrder] = useState<Order | null>(stored);
   const [steps, setSteps] = useState<FlowStep[]>([]);
@@ -94,19 +103,21 @@ export default function App() {
   }, []);
   useEffect(() => {
     if (!order?.id || !order.access) return;
+    let active = true;
     const tick = () =>
       request(`/api/orders/${order.id}`, {
         headers: { "x-order-secret": order.access },
       })
         .then((o: Order) => {
+          if (!active) return;
           if (o.status !== "AWAITING_PAYMENT")
             sessionStorage.removeItem("print-prepared");
-          setOrder((prev) => (prev ? { ...prev, ...o } : prev));
+          setOrder((prev) => (prev?.id === o.id ? { ...prev, ...o } : prev));
         })
         .catch(() => {});
     tick();
     const id = setInterval(tick, 12000);
-    return () => clearInterval(id);
+    return () => { active = false; clearInterval(id); };
   }, [order?.id, order?.access]);
   useEffect(() => {
     if (order) sessionStorage.setItem("print-order", JSON.stringify(order));
@@ -192,8 +203,8 @@ export default function App() {
             sessionStorage.setItem("print-prepared", JSON.stringify(prepared)),
         },
       );
+      releaseResolvedPayment(sessionStorage, outcome);
       if (outcome.status === "settled") {
-        sessionStorage.removeItem("print-prepared");
         setOrder((prev) =>
           prev
             ? {
@@ -203,10 +214,14 @@ export default function App() {
               }
             : prev,
         );
-      } else
+      } else {
+        if (outcome.status === "failed") {
+          setOrder((prev) => prev ? { ...prev, paymentFailed: true } : prev);
+        }
         setMessage(
           `${outcome.message}${"transaction" in outcome && outcome.transaction ? ` Transaction: ${outcome.transaction}` : ""}`,
         );
+      }
     } catch (err) {
       setSteps((previous) => [
         ...previous,
@@ -245,8 +260,8 @@ export default function App() {
       const outcome = await resumePaymentFlow(prepared, (step) =>
         setSteps((s) => [...s, { ...step, at: Date.now() }]),
       );
+      releaseResolvedPayment(sessionStorage, outcome);
       if (outcome.status === "settled") {
-        sessionStorage.removeItem("print-prepared");
         setOrder((prev) =>
           prev
             ? {
@@ -256,7 +271,12 @@ export default function App() {
               }
             : prev,
         );
-      } else setMessage(outcome.message);
+      } else {
+        if (outcome.status === "failed") {
+          setOrder((prev) => prev ? { ...prev, paymentFailed: true } : prev);
+        }
+        setMessage(outcome.message);
+      }
     } catch (e) {
       setSteps((previous) => [
         ...previous,
@@ -274,12 +294,22 @@ export default function App() {
       setBusy(false);
     }
   };
+  const preserveCurrentPayment = () => {
+    const prepared = sessionStorage.getItem("print-prepared");
+    if (!prepared || !order) return;
+    const next = [...saved.filter((item) => item.order.id !== order.id), { order, prepared }];
+    // Write before clearing anything: if storage is full, the current payment stays intact.
+    sessionStorage.setItem("print-saved-payments", JSON.stringify(next));
+    setSaved(next);
+  };
   const reset = () => {
+    if (busy) return;
     if (sessionStorage.getItem("print-prepared")) {
-      setMessage(
-        "A signed payment is still unresolved. Recheck it or contact the operator before starting another order.",
-      );
-      return;
+      if (!window.confirm(
+        "This payment is not confirmed yet and may still complete. A new order is a separate purchase and could charge you again. Keep this order for rechecking and start a separate order?"
+      )) return;
+      try { preserveCurrentPayment(); }
+      catch { setMessage("Could not save your payment for recovery. Recheck it before continuing."); return; }
     }
     sessionStorage.removeItem("print-order");
     sessionStorage.removeItem("print-prepared");
@@ -540,6 +570,28 @@ export default function App() {
                       your address solely to fulfill this order. Shipping is
                       included in the displayed price.
                     </p>
+                    {saved.length > 0 && (
+                      <div className="availability-note" role="status">
+                        <strong>Payments to check</strong>
+                        <p>These earlier orders may still be paid. Open them to check before paying again. Recovery is saved in this browser tab.</p>
+                        {saved.map((item) => (
+                          <button key={item.order.id} type="button" disabled={busy} onClick={() => {
+                            try {
+                              preserveCurrentPayment();
+                              sessionStorage.setItem("print-prepared", item.prepared);
+                              const next = savedPayments().filter((entry) => entry.order.id !== item.order.id);
+                              sessionStorage.setItem("print-saved-payments", JSON.stringify(next));
+                              setSaved(next);
+                              setOrder(item.order);
+                              setSteps([]);
+                              setMessage("Check this payment using the original transaction. No new wallet signature is needed.");
+                            } catch { setMessage("Could not restore this payment. Please keep this tab open and contact the operator."); }
+                          }}>
+                            Open order {item.order.id.slice(0, 8)}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     {!order ? (
                       <form onSubmit={saveOrder} className="order-form">
                         <label>
@@ -637,7 +689,7 @@ export default function App() {
                             View transaction <ExternalLink size={15} />
                           </a>
                         )}
-                        {order.status === "AWAITING_PAYMENT" && (
+                        {order.status === "AWAITING_PAYMENT" && !order.paymentFailed && (
                           <div className="wallet-connect">
                             <label>
                               Choose your CIP-30 wallet
@@ -674,7 +726,7 @@ export default function App() {
                             )}
                           </div>
                         )}
-                        {order.status === "AWAITING_PAYMENT" && (
+                        {order.status === "AWAITING_PAYMENT" && !order.paymentFailed && (
                           <button
                             className="primary form-submit"
                             onClick={
@@ -691,13 +743,21 @@ export default function App() {
                             {busy
                               ? "PROCESSING…"
                               : sessionStorage.getItem("print-prepared")
-                                ? "RECHECK SIGNED PAYMENT"
+                                ? "CHECK PAYMENT STATUS"
                                 : "SIGN & PAY ON CARDANO"}{" "}
                             <ArrowRight size={18} />
                           </button>
                         )}
-                        <button className="subtle" onClick={reset}>
-                          Start another order
+                        {order.paymentFailed && (
+                          <div className="availability-note" role="status">
+                            Payment was rejected. You can start a new order and try again.
+                          </div>
+                        )}
+                        {sessionStorage.getItem("print-prepared") && (
+                          <p role="status">Payment confirmation is incomplete. Recheck safely without signing or paying again. Order reference: {order.id}</p>
+                        )}
+                        <button className="subtle" onClick={reset} disabled={busy}>
+                          {order.paymentFailed ? "Try again with a new order" : "Start another order"}
                         </button>
                       </div>
                     )}
