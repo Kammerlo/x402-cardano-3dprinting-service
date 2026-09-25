@@ -22,6 +22,7 @@ type Order = {
   tx_hash: string | null;
   signed_tx_hash?: string | null;
   network: string;
+  price_lovelace: string;
 };
 type Batch = {
   id: string;
@@ -271,6 +272,21 @@ export function Admin({ onClose }: { onClose: () => void }) {
         >
           Check stored payment
         </button>
+      )}
+      {order.status === "AWAITING_PAYMENT" && order.signed_tx_hash && (
+        <button disabled={busy} onClick={() => {
+          const entered = window.prompt(
+            `Verify on ${order.network}: the transaction is confirmed, pays the shop address, and pays the full order amount (${Number(order.price_lovelace) / 1_000_000} ADA). This records payment and releases this order for printing. Paste the verified transaction hash to confirm:`
+          );
+          if (entered === null) return;
+          if (entered.trim().toLowerCase() !== order.signed_tx_hash?.toLowerCase()) {
+            setError("The entered hash must match this order's stored signed transaction.");
+            return;
+          }
+          void action(`/api/admin/orders/${order.id}/settle`, {
+            transaction: entered.trim().toLowerCase(), confirmedOnChain: true,
+          });
+        }}>Mark verified transaction as settled</button>
       )}
       {["PRINTED", "SHIPPED"].includes(order.status) && (
         <button

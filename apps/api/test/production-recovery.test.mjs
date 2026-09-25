@@ -193,6 +193,54 @@ test(
       );
       assert.equal(reconciled.status, 200, await reconciled.clone().text());
       assert.equal(settlements, 1);
+      // Operator settlement only links the original hash, requires explicit
+      // confirmation/authentication, and is recorded once with an audit trail.
+      await db.query("UPDATE orders SET status='AWAITING_PAYMENT',tx_hash=NULL WHERE id=$1", [order.id]);
+      const publicPending = await (await req(`/api/transactions/${hash}`)).json();
+      assert.equal(publicPending.paymentStatus, "UNCONFIRMED");
+      assert.deepEqual(Object.keys(publicPending).sort(), ["chain", "network", "orderStatus", "paymentStatus", "transaction"]);
+      const settlePath = `/api/admin/orders/${order.id}/settle`;
+      const confirmation = { transaction: hash, confirmedOnChain: true };
+      assert.equal((await req(settlePath, confirmation, "wrong")).status, 401);
+      assert.equal((await req(settlePath, { transaction: hash })).status, 400);
+      assert.equal((await req(settlePath, { transaction: "f".repeat(64), confirmedOnChain: true })).status, 409);
+      await db.query("UPDATE payment_attempts SET lease_until=now()+interval '1 minute' WHERE order_id=$1", [order.id]);
+      assert.equal((await req(settlePath, confirmation)).status, 409);
+      await db.query("UPDATE payment_attempts SET lease_until=NULL WHERE order_id=$1", [order.id]);
+      assert.equal((await req(settlePath, confirmation)).status, 200);
+      assert.equal((await req(settlePath, confirmation)).status, 409);
+      const publicSettled = await (await req(`/api/transactions/${hash.toUpperCase()}`)).json();
+      assert.equal(publicSettled.paymentStatus, "SETTLED");
+      assert.equal(publicSettled.orderStatus, "PAID");
+      assert.equal((await req('/api/transactions/invalid')).status, 400);
+      assert.equal((await req(`/api/transactions/${"e".repeat(64)}`)).status, 404);
+      const manualEvents = (await db.query("SELECT details FROM order_events WHERE order_id=$1 AND kind='MANUAL_SETTLEMENT'", [order.id])).rows;
+      assert.equal(manualEvents.length, 1);
+      assert.equal(manualEvents[0].details.transaction, hash);
+      // Public lookup reconciles independently of the facilitator, then returns
+      // the updated status without duplicate events or repeated provider calls.
+      await db.query("UPDATE orders SET status='AWAITING_PAYMENT',tx_hash=NULL WHERE id=$1", [order.id]);
+      await db.query("UPDATE payment_attempts SET chain_check_after=NULL WHERE order_id=$1", [order.id]);
+      env.BLOCKFROST_PREPROD_PROJECT_ID = 'test-chain-key';
+      let chainCalls = 0;
+      globalThis.fetch = async (url) => {
+        chainCalls++;
+        const path = new URL(url).pathname;
+        if (path.endsWith('/utxos')) return Response.json({ hash, outputs: [{ address: env.SELLER_ADDRESS, amount: [{ unit: 'lovelace', quantity: '5000000' }] }] });
+        if (path.endsWith(`/txs/${hash}`)) return Response.json({ hash, block: 'test-block', block_height: 100, valid_contract: true });
+        if (path.endsWith('/blocks/100')) return Response.json({ hash: 'test-block', height: 100 });
+        if (path.endsWith('/blocks/latest')) return Response.json({ height: 120 });
+        throw new Error('Unexpected chain lookup');
+      };
+      const chainResult = await (await req(`/api/transactions/${hash}`)).json();
+      assert.equal(chainResult.paymentStatus, 'SETTLED');
+      assert.equal(chainResult.orderStatus, 'PAID');
+      assert.equal(chainResult.chain.status, 'CONFIRMED');
+      assert.equal(chainCalls, 4);
+      await req(`/api/transactions/${hash}`);
+      assert.equal(chainCalls, 4);
+      assert.equal((await db.query("SELECT count(*)::int AS count FROM order_events WHERE order_id=$1 AND kind='CHAIN_SETTLEMENT'", [order.id])).rows[0].count, 1);
+
       await db.query(
         "UPDATE shop_settings SET gateway_last_seen=now(),printer_ready=true,printer_state='standby',available_batch_sizes=ARRAY[1,4] WHERE id=1",
       );

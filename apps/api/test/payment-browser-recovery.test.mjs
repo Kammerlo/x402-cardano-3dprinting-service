@@ -50,3 +50,43 @@ test('browser distinguishes rejected payments from uncertain settlement', async 
     });
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test('confirmation polling tolerates delayed 402 responses and preserves the signature', async () => {
+  const { resumePaymentFlow, CONFIRMATION_TIMEOUT_MS, CONFIRMATION_RETRY_DELAY_MS } = await import('../../web/src/payFlow.ts');
+  assert.equal(CONFIRMATION_TIMEOUT_MS, 600_000);
+  assert.equal(CONFIRMATION_RETRY_DELAY_MS, 15_000);
+  const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  const transaction = Buffer.from('84a3008001800200a0f5f6', 'hex').toString('base64');
+  const hash = decodeCardanoTransaction(transaction).txHash;
+  const payment = {
+    url: 'https://shop.test/api/orders/one/pay',
+    headers: { 'PAYMENT-SIGNATURE': 'same-original-signature' },
+    payload: { accepted: { network: 'cardano:preprod' }, payload: { transaction } },
+  };
+  try {
+    let calls = 0;
+    globalThis.fetch = async (_, init) => {
+      assert.equal(init.headers['PAYMENT-SIGNATURE'], 'same-original-signature');
+      calls++;
+      return calls <= 5
+        ? Response.json({}, { status: 402 })
+        : Response.json({ status: 'PAID', transaction: hash });
+    };
+    assert.equal((await resumePaymentFlow(payment, () => {}, { retryDelayMs: 0 })).status, 'settled');
+    assert.equal(calls, 6, 'continues beyond the old three-check limit');
+
+    calls = 0;
+    let now = 0;
+    Date.now = () => now;
+    globalThis.fetch = async () => { calls++; now += 100; return Response.json({}, { status: 402 }); };
+    const unresolved = await resumePaymentFlow(payment, () => {}, { retryDelayMs: 0, confirmationTimeoutMs: 250 });
+    assert.equal(calls, 3, 'the total window bounds repeated requests');
+    assert.equal(unresolved.status, 'unknown');
+    assert.match(unresolved.message, /may already be on-chain/);
+    assert.equal(unresolved.transaction, hash);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Date.now = originalNow;
+  }
+});
