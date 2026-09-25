@@ -2,7 +2,7 @@
 services:
   gateway:
     build: .
-    command: npm run dev -w @print/gateway
+    command: npm run start -w @print/gateway
     restart: unless-stopped
     env_file: .env.gateway
     volumes:

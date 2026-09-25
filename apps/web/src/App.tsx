@@ -1,110 +1,861 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
-import { ArrowDownRight, ArrowRight, Check, ChevronDown, ExternalLink, Menu, ShieldCheck, X } from 'lucide-react';
-import { Admin } from './Admin';
-const ModelScene = lazy(() => import('./ModelScene').then(m => ({ default: m.ModelScene }))); 
-import type { FlowStep, PreparedPayment } from './payFlow';
-import type { ClientCardanoSigner } from '@x402/cardano';
-import type { CardanoNetwork } from './cip30';
+import { lazy, Suspense, useEffect, useState } from "react";
+import {
+  ArrowDownRight,
+  ArrowRight,
+  Check,
+  ChevronDown,
+  ExternalLink,
+  Menu,
+  ShieldCheck,
+  X,
+} from "lucide-react";
+import { Admin } from "./Admin";
+const ModelScene = lazy(() =>
+  import("./ModelScene").then((m) => ({ default: m.ModelScene })),
+);
+import type { FlowStep, PreparedPayment } from "./payFlow";
+import type { ClientCardanoSigner } from "@x402/cardano";
+import type { CardanoNetwork } from "./cip30";
 
-type Order = { id: string; access: string; status: string; priceLovelace: string; transaction?: string | null; network: CardanoNetwork };
-type Availability = 'available' | 'operator_paused' | 'gateway_offline' | 'gateway_not_armed' | 'printer_not_ready' | 'batch_needs_review';
-type Catalog = { product: { priceLovelace: string; maxBatch: number }; paused: boolean; availability: Availability; printerState: string | null; network: CardanoNetwork; payTo: string; pending: number };
-const availabilityText: Record<Availability, { label: string; detail: string }> = {
-  available: { label: 'AVAILABLE', detail: '' },
-  operator_paused: { label: 'PAUSED BY OPERATOR', detail: 'The operator has temporarily paused new orders.' },
-  gateway_offline: { label: 'PRINTER OFFLINE · ORDERS OPEN', detail: 'You can pay now. Your order will wait in the queue until the operator restores the home gateway and printer; printing and shipping may take longer.' },
-  gateway_not_armed: { label: 'AWAITING OPERATOR · ORDERS OPEN', detail: 'Paid orders can join the queue. The operator must inspect and arm the gateway before the next print starts.' },
-  printer_not_ready: { label: 'PRINTER NOT READY · ORDERS OPEN', detail: 'You can pay now. Your print waits until the U1 and its prepared plate files are ready; fulfillment may take longer.' },
-  batch_needs_review: { label: 'JOB UNDER REVIEW · ORDERS OPEN', detail: 'The previous print needs operator review. Paid orders are queued safely and printing resumes only after inspection.' },
+type Order = {
+  id: string;
+  access: string;
+  status: string;
+  priceLovelace: string;
+  transaction?: string | null;
+  network: CardanoNetwork;
 };
-const API = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
-const request = async (path: string, init?: RequestInit) => { const r = await fetch(`${API}${path}`, init); const data = await r.json(); if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`); return data; };
+type Availability =
+  | "available"
+  | "operator_paused"
+  | "gateway_offline"
+  | "gateway_not_armed"
+  | "printer_not_ready"
+  | "batch_needs_review";
+type Catalog = {
+  product: { priceLovelace: string; maxBatch: number };
+  paused: boolean;
+  availability: Availability;
+  printerState: string | null;
+  network: CardanoNetwork;
+  payTo: string;
+  pending: number;
+};
+const availabilityText: Record<
+  Availability,
+  { label: string; detail: string }
+> = {
+  available: { label: "AVAILABLE", detail: "" },
+  operator_paused: {
+    label: "PAUSED BY OPERATOR",
+    detail: "The operator has temporarily paused new orders.",
+  },
+  gateway_offline: {
+    label: "PRINTER OFFLINE · ORDERS OPEN",
+    detail:
+      "You can pay now. Your order will wait in the queue until the operator restores the home gateway and printer; printing and shipping may take longer.",
+  },
+  gateway_not_armed: {
+    label: "AWAITING OPERATOR · ORDERS OPEN",
+    detail:
+      "Paid orders can join the queue. The operator must inspect and arm the gateway before the next print starts.",
+  },
+  printer_not_ready: {
+    label: "PRINTER NOT READY · ORDERS OPEN",
+    detail:
+      "You can pay now. Your print waits until the U1 and its prepared plate files are ready; fulfillment may take longer.",
+  },
+  batch_needs_review: {
+    label: "JOB UNDER REVIEW · ORDERS OPEN",
+    detail:
+      "The previous print needs operator review. Paid orders are queued safely and printing resumes only after inspection.",
+  },
+};
+const API = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+const request = async (path: string, init?: RequestInit) => {
+  const r = await fetch(`${API}${path}`, init);
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+};
 const ada = (v?: string) => (Number(v || 0) / 1_000_000).toFixed(2);
-const txUrl = (hash: string, network: CardanoNetwork = "cardano:mainnet") => `https://${network === "cardano:preprod" ? "preprod." : ""}cardanoscan.io/transaction/${hash}`;
-const stored = (): Order | null => { try { return JSON.parse(sessionStorage.getItem('print-order') || 'null'); } catch { return null; } };
+const txUrl = (hash: string, network: CardanoNetwork = "cardano:mainnet") =>
+  `https://${network === "cardano:preprod" ? "preprod." : ""}cardanoscan.io/transaction/${hash}`;
+const stored = (): Order | null => {
+  try {
+    return JSON.parse(sessionStorage.getItem("print-order") || "null");
+  } catch {
+    return null;
+  }
+};
 
 export default function App() {
   const [catalog, setCatalog] = useState<Catalog>();
   const [order, setOrder] = useState<Order | null>(stored);
   const [steps, setSteps] = useState<FlowStep[]>([]);
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState('');
-  const [showAdmin, setShowAdmin] = useState(location.pathname === '/admin');
+  const [message, setMessage] = useState("");
+  const [showAdmin, setShowAdmin] = useState(location.pathname === "/admin");
   const [menu, setMenu] = useState(false);
-  const [walletName, setWalletName] = useState('');
+  const [walletName, setWalletName] = useState("");
   const [wallets, setWallets] = useState<string[]>([]);
-  const [selectedWallet, setSelectedWallet] = useState('');
+  const [selectedWallet, setSelectedWallet] = useState("");
   const [signer, setSigner] = useState<ClientCardanoSigner | null>(null);
-  const [walletAddress, setWalletAddress] = useState('');
-  const refreshWallets = () => { const names = Object.keys((window as any).cardano || {}).filter(k => typeof (window as any).cardano[k]?.enable === 'function'); setWallets(names); setSelectedWallet(current => names.includes(current) ? current : names[0] || ''); };
-  useEffect(() => { refreshWallets(); }, [order?.id]);
-  useEffect(() => { setSigner(null); setWalletAddress(''); }, [catalog?.network]);
-  useEffect(() => { const refresh = () => request('/api/catalog').then(setCatalog).catch(e => { setCatalog(undefined); setMessage(e.message); }); refresh(); const id = setInterval(refresh, 15_000); return () => clearInterval(id); }, []);
-  useEffect(() => { if (!order?.id || !order.access) return; const tick = () => request(`/api/orders/${order.id}`, { headers: { 'x-order-secret': order.access } }).then((o: Order) => { if (o.status !== 'AWAITING_PAYMENT') sessionStorage.removeItem('print-prepared'); setOrder(prev => prev ? { ...prev, ...o } : prev); }).catch(() => {}); tick(); const id = setInterval(tick, 12000); return () => clearInterval(id); }, [order?.id, order?.access]);
-  useEffect(() => { if (order) sessionStorage.setItem('print-order', JSON.stringify(order)); }, [order]);
+  const [walletAddress, setWalletAddress] = useState("");
+  const refreshWallets = () => {
+    const names = Object.keys((window as any).cardano || {}).filter(
+      (k) => typeof (window as any).cardano[k]?.enable === "function",
+    );
+    setWallets(names);
+    setSelectedWallet((current) =>
+      names.includes(current) ? current : names[0] || "",
+    );
+  };
+  useEffect(() => {
+    refreshWallets();
+  }, [order?.id]);
+  useEffect(() => {
+    setSigner(null);
+    setWalletAddress("");
+  }, [catalog?.network]);
+  useEffect(() => {
+    const refresh = () =>
+      request("/api/catalog")
+        .then(setCatalog)
+        .catch((e) => {
+          setCatalog(undefined);
+          setMessage(e.message);
+        });
+    refresh();
+    const id = setInterval(refresh, 15_000);
+    return () => clearInterval(id);
+  }, []);
+  useEffect(() => {
+    if (!order?.id || !order.access) return;
+    const tick = () =>
+      request(`/api/orders/${order.id}`, {
+        headers: { "x-order-secret": order.access },
+      })
+        .then((o: Order) => {
+          if (o.status !== "AWAITING_PAYMENT")
+            sessionStorage.removeItem("print-prepared");
+          setOrder((prev) => (prev ? { ...prev, ...o } : prev));
+        })
+        .catch(() => {});
+    tick();
+    const id = setInterval(tick, 12000);
+    return () => clearInterval(id);
+  }, [order?.id, order?.access]);
+  useEffect(() => {
+    if (order) sessionStorage.setItem("print-order", JSON.stringify(order));
+  }, [order]);
   const saveOrder = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault(); setBusy(true); setMessage('');
-    try { const f = new FormData(e.currentTarget); const body = Object.fromEntries(f.entries());
-      const created = await request('/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, productId: 'proof-token' }) });
-      setOrder(created); document.getElementById('checkout')?.scrollIntoView({ behavior: 'smooth' });
-    } catch (err) { setMessage(String(err instanceof Error ? err.message : err)); } finally { setBusy(false); }
+    e.preventDefault();
+    setBusy(true);
+    setMessage("");
+    try {
+      const f = new FormData(e.currentTarget);
+      const body = Object.fromEntries(f.entries());
+      const created = await request("/api/orders", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...body, productId: "proof-token" }),
+      });
+      setOrder(created);
+      document
+        .getElementById("checkout")
+        ?.scrollIntoView({ behavior: "smooth" });
+    } catch (err) {
+      setMessage(String(err instanceof Error ? err.message : err));
+    } finally {
+      setBusy(false);
+    }
   };
   const connectWallet = async () => {
-    if (!catalog || !selectedWallet) { refreshWallets(); setMessage('Install a CIP-30 wallet and select it here.'); return; }
-    setBusy(true); setMessage('');
+    if (!catalog || !selectedWallet) {
+      refreshWallets();
+      setMessage("Install a CIP-30 wallet and select it here.");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
     try {
       const wallet = (window as any).cardano?.[selectedWallet];
-      if (typeof wallet?.enable !== 'function') throw new Error('Wallet is no longer available. Refresh the wallet list.');
+      if (typeof wallet?.enable !== "function")
+        throw new Error(
+          "Wallet is no longer available. Refresh the wallet list.",
+        );
       const api = await wallet.enable();
-      const { createCip30Signer } = await import('./cip30');
-      const preprod = catalog.network === 'cardano:preprod';
+      const { createCip30Signer } = await import("./cip30");
+      const preprod = catalog.network === "cardano:preprod";
       const connected = await createCip30Signer(api, {
         network: catalog.network,
-        baseUrl: preprod ? 'https://cardano-preprod.blockfrost.io/api/v0' : 'https://cardano-mainnet.blockfrost.io/api/v0',
-        projectId: preprod ? import.meta.env.VITE_BLOCKFROST_PREPROD_PROJECT_ID || '' : import.meta.env.VITE_BLOCKFROST_MAINNET_PROJECT_ID || '',
+        baseUrl: preprod
+          ? "https://cardano-preprod.blockfrost.io/api/v0"
+          : "https://cardano-mainnet.blockfrost.io/api/v0",
+        projectId: preprod
+          ? import.meta.env.VITE_BLOCKFROST_PREPROD_PROJECT_ID || ""
+          : import.meta.env.VITE_BLOCKFROST_MAINNET_PROJECT_ID || "",
       });
-      setSigner(connected); setWalletAddress(connected.getAddress()); setWalletName(selectedWallet);
-    } catch (err) { setMessage(String(err instanceof Error ? err.message : err)); } finally { setBusy(false); }
+      setSigner(connected);
+      setWalletAddress(connected.getAddress());
+      setWalletName(selectedWallet);
+    } catch (err) {
+      setMessage(String(err instanceof Error ? err.message : err));
+    } finally {
+      setBusy(false);
+    }
   };
   const pay = async () => {
-    if (!order || !catalog || !signer) return; setBusy(true); setMessage(''); setSteps([]);
+    if (!order || !catalog || !signer) return;
+    setBusy(true);
+    setMessage("");
+    setSteps([]);
     try {
-      if (order.network !== catalog.network) throw new Error('The shop network changed since this order was created. Contact the operator.');
-      const { runPaymentFlow } = await import('./payFlow');
-      const outcome = await runPaymentFlow(`${API}/api/orders/${order.id}/pay`, signer, step => setSteps(s => [...s, step]), {
-        network: catalog.network, payTo: catalog.payTo, maxAmount: order.priceLovelace,
-        headers: { 'x-order-secret': order.access },
-        onPrepared: prepared => sessionStorage.setItem('print-prepared', JSON.stringify(prepared)),
-      });
-      if (outcome.status === 'settled') { sessionStorage.removeItem('print-prepared'); setOrder(prev => prev ? { ...prev, status: 'PAID', transaction: (outcome.receipt as any)?.transaction } : prev); }
-      else setMessage(`${outcome.message}${'transaction' in outcome && outcome.transaction ? ` Transaction: ${outcome.transaction}` : ''}`);
-    } catch (err) { setMessage(String(err instanceof Error ? err.message : err)); } finally { setBusy(false); }
+      if (order.network !== catalog.network)
+        throw new Error(
+          "The shop network changed since this order was created. Contact the operator.",
+        );
+      const { runPaymentFlow } = await import("./payFlow");
+      const outcome = await runPaymentFlow(
+        `${API}/api/orders/${order.id}/pay`,
+        signer,
+        (step) => setSteps((s) => [...s, step]),
+        {
+          network: catalog.network,
+          payTo: catalog.payTo,
+          maxAmount: order.priceLovelace,
+          headers: { "x-order-secret": order.access },
+          onPrepared: (prepared) =>
+            sessionStorage.setItem("print-prepared", JSON.stringify(prepared)),
+        },
+      );
+      if (outcome.status === "settled") {
+        sessionStorage.removeItem("print-prepared");
+        setOrder((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: "PAID",
+                transaction: (outcome.receipt as any)?.transaction,
+              }
+            : prev,
+        );
+      } else
+        setMessage(
+          `${outcome.message}${"transaction" in outcome && outcome.transaction ? ` Transaction: ${outcome.transaction}` : ""}`,
+        );
+    } catch (err) {
+      setMessage(String(err instanceof Error ? err.message : err));
+    } finally {
+      setBusy(false);
+    }
   };
   const retryPayment = async () => {
-    setBusy(true); setMessage('');
+    setBusy(true);
+    setMessage("");
     try {
-      const prepared = JSON.parse(sessionStorage.getItem('print-prepared') || 'null') as PreparedPayment | null;
-      if (!prepared || !order || prepared.url !== `${API}/api/orders/${order.id}/pay` || prepared.headers['x-order-secret'] !== order.access) throw new Error('No signed payment for this order. Contact the operator before attempting another payment.');
-      const { resumePaymentFlow } = await import('./payFlow');
-      const outcome = await resumePaymentFlow(prepared, step => setSteps(s => [...s, step]));
-      if (outcome.status === 'settled') { sessionStorage.removeItem('print-prepared'); setOrder(prev => prev ? { ...prev, status: 'PAID', transaction: (outcome.receipt as any)?.transaction } : prev); }
-      else setMessage(outcome.message);
-    } catch (e) { setMessage(String(e)); } finally { setBusy(false); }
+      const prepared = JSON.parse(
+        sessionStorage.getItem("print-prepared") || "null",
+      ) as PreparedPayment | null;
+      if (
+        !prepared ||
+        !order ||
+        prepared.url !== `${API}/api/orders/${order.id}/pay` ||
+        prepared.headers["x-order-secret"] !== order.access
+      )
+        throw new Error(
+          "No signed payment for this order. Contact the operator before attempting another payment.",
+        );
+      const { resumePaymentFlow } = await import("./payFlow");
+      const outcome = await resumePaymentFlow(prepared, (step) =>
+        setSteps((s) => [...s, step]),
+      );
+      if (outcome.status === "settled") {
+        sessionStorage.removeItem("print-prepared");
+        setOrder((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: "PAID",
+                transaction: (outcome.receipt as any)?.transaction,
+              }
+            : prev,
+        );
+      } else setMessage(outcome.message);
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
   };
-  const reset = () => { if (sessionStorage.getItem('print-prepared')) { setMessage('A signed payment is still unresolved. Recheck it or contact the operator before starting another order.'); return; } sessionStorage.removeItem('print-order'); sessionStorage.removeItem('print-prepared'); setOrder(null); setSteps([]); setMessage(''); };
-  return <div className="app">
-    <header className="nav shell"><a href="/" className="brand"><span className="brand-mark">4<span>0</span>2</span><span className="brand-divider"/>PRINT<br/>PROTOCOL</a><nav className={menu ? 'open' : ''}><a href="#object" onClick={() => setMenu(false)}>The object</a><a href="#protocol" onClick={() => setMenu(false)}>How it works</a><a href="#checkout" onClick={() => setMenu(false)}>Get yours</a><a href="/admin" onClick={e => { e.preventDefault(); history.pushState({}, '', '/admin'); setShowAdmin(true); setMenu(false); }}>Operator ↗</a></nav><button className="mobile-menu" onClick={() => setMenu(v => !v)} aria-label="Open navigation">{menu ? <X/> : <Menu/>}</button><a href="#checkout" className="nav-cta">ORDER A PRINT <ArrowRight size={15}/></a></header>
-    {showAdmin ? <Admin onClose={() => { history.pushState({}, '', '/'); setShowAdmin(false); }} /> : <>
-      <main>
-        <section className="hero shell"><div className="hero-top"><span className="eyebrow"><span className="pulse"/> {catalog?.network ? `LIVE EXPERIMENT · CARDANO ${catalog.network.split(':')[1].toUpperCase()}` : 'CONNECTING TO CARDANO'}</span><span className="serial">EDITION 001 / THE INTERNET OF THINGS</span></div><div className="hero-grid"><div className="hero-copy"><div className="orange-spark">✳</div><h1>A payment.<br/>A print.<br/><em>A little magic.</em></h1><p>Send ADA over the internet. Watch an actual 3D printer turn a digital handshake into something you can hold.</p><a href="#checkout" className="primary">MAKE IT REAL <ArrowDownRight size={22}/></a><div className="hero-foot"><span>01 / ONE PHYSICAL OBJECT</span><span>02 / ONE ON-CHAIN PAYMENT</span></div></div><Suspense fallback={<div className="scene-wrap scene-loading">Preparing the 3D study…</div>}><ModelScene/></Suspense></div><div className="hero-bottom"><span>THE EXPERIMENT <span className="small-arrow">↘</span></span><span>SCROLL TO DISCOVER</span></div></section>
-        <section id="object" className="object-section"><div className="shell object-grid"><div className="section-index"><span>01 — THE OBJECT</span><span className="index-line"/></div><div><h2>Meet the <em>Proof of Print.</em></h2><p className="lead">A pocket sized physical receipt for an internet native transaction. Designed for this experiment, made layer by layer on a Snapmaker U1.</p><div className="spec-grid"><div><span>01 / FORMAT</span><strong>Ø 54 mm</strong><small>Desk friendly token</small></div><div><span>02 / MATERIAL</span><strong>PLA</strong><small>Color varies by run</small></div><div><span>03 / PROCESS</span><strong>FDM</strong><small>Made on demand</small></div></div><a href="#checkout" className="text-link">Own the experiment <ArrowRight size={18}/></a></div></div></section>
-        <section id="protocol" className="protocol-section shell"><div className="section-index"><span>02 — THE PROTOCOL</span><span className="index-line"/></div><div className="protocol-intro"><h2>The internet says <span>pay me.</span><br/>Your printer says <em>okay.</em></h2><p>HTTP 402 is the web’s “payment required” status. x402 gives it a working payment conversation. Here, the payment is a real Cardano transaction.</p></div><div className="protocol-steps"><div><span className="step-num">01</span><span className="http-pill">POST /pay</span><h3>Ask for the print</h3><p>Your browser requests the protected print order.</p></div><div><span className="step-num">02</span><span className="http-pill hot">HTTP 402</span><h3>Get the price</h3><p>The API returns the exact ADA amount, address and mainnet payment rules.</p></div><div><span className="step-num">03</span><span className="http-pill">PAYMENT-SIGNATURE</span><h3>Sign in your wallet</h3><p>Your wallet signs a transaction. The hosted facilitator verifies and settles it.</p></div><div><span className="step-num">04</span><span className="http-pill green">HTTP 200</span><h3>Make it tangible</h3><p>Paid orders queue for a supervised print batch and delivery.</p></div></div><div className="protocol-note"><span>↗</span><p>The live checkout below exposes each HTTP step and its payment receipt so you can see the protocol in action.</p></div></section>
-        <section id="checkout" className="checkout-section"><div className="shell"><div className="checkout-head"><div><span className="eyebrow">03 — FROM DIGITAL TO PHYSICAL</span><h2>Your move<span className="period">.</span></h2></div><p>One small object. One real Cardano transaction. A story you can put on your desk.</p></div><div className="checkout-grid"><div className="order-panel"><div className="panel-top"><span>YOUR ORDER / 001</span><span>● {catalog ? catalog.availability === 'available' && catalog.printerState === 'printing' ? 'PRINTING · ORDERS OPEN' : availabilityText[catalog.availability].label : 'CHECKING'}</span></div>{catalog && catalog.availability !== 'available' && <div className="availability-note" role="status"><strong>{availabilityText[catalog.availability].label}</strong><p>{availabilityText[catalog.availability].detail}</p></div>}<div className="product-row"><div className="product-symbol">✳</div><div><strong>Proof of Print</strong><small>3D printed token · quantity 1</small></div><b>₳ {ada(catalog?.product.priceLovelace)}</b></div><div className="divider"/><div className="price-row"><span>Print + handling</span><strong>₳ {ada(catalog?.product.priceLovelace)}</strong></div><p className="fineprint">Delivery currently available within Germany. We’ll use your address solely to fulfill this order. Shipping is included in the displayed price.</p>
-          {!order ? <form onSubmit={saveOrder} className="order-form"><label>Your name<input name="name" required maxLength={100} placeholder="Ada Lovelace"/></label><label>Email for order questions<input type="email" name="email" required maxLength={160} placeholder="ada@example.com"/></label><label>Street and house number<input name="addressLine1" required maxLength={180} placeholder="Example Street 42"/></label><label>Address addition <small>optional</small><input name="addressLine2" maxLength={180} placeholder="Apartment, c/o"/></label><div className="form-pair"><label>Postal code<input name="postalCode" required pattern="[0-9]{5}" placeholder="10115"/></label><label>City<input name="city" required maxLength={100} placeholder="Berlin"/></label></div><label>Country<select name="country" required defaultValue="DE"><option value="DE">Germany</option></select></label><button className="primary form-submit" disabled={busy || !catalog || catalog.paused}>{busy ? 'PREPARING…' : 'CONTINUE TO PAYMENT'} <ArrowRight size={18}/></button><p className="form-disclaimer">By continuing, you agree to the delivery and refund notes below. No wallet access is requested until you choose to pay.</p></form> : <div className="order-state"><div className="state-header"><Check size={18}/> ORDER {order.id.slice(0, 8).toUpperCase()}</div><p>Status: <strong>{order.status.replaceAll('_', ' ')}</strong></p>{order.transaction && <a className="text-link" target="_blank" rel="noreferrer" href={txUrl(order.transaction, order.network)}>View transaction <ExternalLink size={15}/></a>}{order.status === 'AWAITING_PAYMENT' && <div className="wallet-connect"><label>Choose your CIP-30 wallet<select value={selectedWallet} onChange={e => { setSelectedWallet(e.target.value); setSigner(null); setWalletAddress(''); }}>{wallets.map(name => <option key={name} value={name}>{name}</option>)}</select></label><button type="button" onClick={refreshWallets}>Refresh wallets</button><button type="button" disabled={busy || !selectedWallet} onClick={connectWallet}>Connect wallet</button>{walletAddress && <small>Connected: {walletName} · {walletAddress.slice(0, 16)}…</small>}</div>}{order.status === 'AWAITING_PAYMENT' && <button className="primary form-submit" onClick={sessionStorage.getItem('print-prepared') ? retryPayment : pay} disabled={busy || (!signer && !sessionStorage.getItem('print-prepared'))}>{busy ? 'PROCESSING…' : sessionStorage.getItem('print-prepared') ? 'RECHECK SIGNED PAYMENT' : 'SIGN & PAY ON CARDANO'} <ArrowRight size={18}/></button>}<button className="subtle" onClick={reset}>Start another order</button></div>}
-          {message && <div className="error-message" role="alert">{message}</div>}
-        </div><div className="trace-panel"><div className="panel-top"><span>LIVE PROTOCOL TRACE</span><span className="live-indicator">● LIVE</span></div><div className="terminal"><div className="terminal-title"><span className="terminal-dots">● ● ●</span> payment.session <span>{catalog?.network?.split(':')[1].toUpperCase() || 'NETWORK'}</span></div>{steps.length ? steps.map((s, i) => <div className="trace-step" key={`${s.id}-${i}`}><span className="trace-index">{String(i + 1).padStart(2, '0')}</span><div><strong>{s.title}</strong>{'detail' in s && <pre>{JSON.stringify(s.detail, null, 2)}</pre>}</div></div>) : <div className="terminal-empty"><span className="cursor">▌</span><p>Your live HTTP conversation will appear here when you pay.</p></div>}</div><div className="trace-foot"><ShieldCheck size={18}/> The server never sees your wallet keys. Your delivery address is visible only to the operator.</div></div></div></div></section>
-        <section className="faq shell"><div><span className="eyebrow">A FEW GOOD QUESTIONS</span><h2>Small print.<br/><em>Big idea.</em></h2></div><div className="faq-list"><details><summary>Is this a real purchase? <ChevronDown size={18}/></summary><p>Yes. This is Cardano {catalog?.network?.split(':')[1] || 'network'}. Confirm the ADA amount in your wallet before signing. On mainnet this is a real purchase. On preprod, test ADA has no monetary value; any print and delivery remains subject to operator testing.</p></details><details><summary>When will my print ship? <ChevronDown size={18}/></summary><p>Prints are grouped into small supervised batches of up to four. This is a small experiment, so timing can vary. We will contact you by email if there is a problem.</p></details><details><summary>What if printing fails? <ChevronDown size={18}/></summary><p>The operator reviews failed jobs and can arrange a reprint or a manual refund. On-chain payments are not automatically reversible. Contact the operator using the address published in the repository.</p></details><details><summary>What happens to my address? <ChevronDown size={18}/></summary><p>Your delivery details are stored in the order database for fulfillment. They are never placed on chain or sent to the printer. The public source code contains no customer data.</p></details></div></section>
-      </main><footer><div className="shell footer-grid"><div className="footer-brand">402<span>✳</span></div><div><span>AN OPEN EXPERIMENT</span><p>Making internet native payments tangible, one layer at a time.</p></div><div><span>FOLLOW THE BUILD</span><a href="https://github.com/Kammerlo/x402-cardano-3dprinting-service" target="_blank" rel="noreferrer">SOURCE ON GITHUB ↗</a></div><div className="footer-end">CARDANO MAINNET · 2026</div></div></footer>
-    </>}
-  </div>;
+  const reset = () => {
+    if (sessionStorage.getItem("print-prepared")) {
+      setMessage(
+        "A signed payment is still unresolved. Recheck it or contact the operator before starting another order.",
+      );
+      return;
+    }
+    sessionStorage.removeItem("print-order");
+    sessionStorage.removeItem("print-prepared");
+    setOrder(null);
+    setSteps([]);
+    setMessage("");
+  };
+  return (
+    <div className="app">
+      <header className="nav shell">
+        <a href="/" className="brand">
+          <span className="brand-mark">
+            4<span>0</span>2
+          </span>
+          <span className="brand-divider" />
+          PRINT
+          <br />
+          PROTOCOL
+        </a>
+        <nav className={menu ? "open" : ""}>
+          <a href="#object" onClick={() => setMenu(false)}>
+            The object
+          </a>
+          <a href="#protocol" onClick={() => setMenu(false)}>
+            How it works
+          </a>
+          <a href="#checkout" onClick={() => setMenu(false)}>
+            Get yours
+          </a>
+          <a
+            href="/admin"
+            onClick={(e) => {
+              e.preventDefault();
+              history.pushState({}, "", "/admin");
+              setShowAdmin(true);
+              setMenu(false);
+            }}
+          >
+            Operator ↗
+          </a>
+        </nav>
+        <button
+          className="mobile-menu"
+          onClick={() => setMenu((v) => !v)}
+          aria-label="Open navigation"
+        >
+          {menu ? <X /> : <Menu />}
+        </button>
+        <a href="#checkout" className="nav-cta">
+          ORDER A PRINT <ArrowRight size={15} />
+        </a>
+      </header>
+      {showAdmin ? (
+        <Admin
+          onClose={() => {
+            history.pushState({}, "", "/");
+            setShowAdmin(false);
+          }}
+        />
+      ) : (
+        <>
+          <main>
+            <section className="hero shell">
+              <div className="hero-top">
+                <span className="eyebrow">
+                  <span className="pulse" />{" "}
+                  {catalog?.network
+                    ? `LIVE EXPERIMENT · CARDANO ${catalog.network.split(":")[1].toUpperCase()}`
+                    : "CONNECTING TO CARDANO"}
+                </span>
+                <span className="serial">
+                  EDITION 001 / THE INTERNET OF THINGS
+                </span>
+              </div>
+              <div className="hero-grid">
+                <div className="hero-copy">
+                  <div className="orange-spark">✳</div>
+                  <h1>
+                    A payment.
+                    <br />A print.
+                    <br />
+                    <em>A little magic.</em>
+                  </h1>
+                  <p>
+                    Send ADA over the internet. Watch an actual 3D printer turn
+                    a digital handshake into something you can hold.
+                  </p>
+                  <a href="#checkout" className="primary">
+                    MAKE IT REAL <ArrowDownRight size={22} />
+                  </a>
+                  <div className="hero-foot">
+                    <span>01 / ONE PHYSICAL OBJECT</span>
+                    <span>02 / ONE ON-CHAIN PAYMENT</span>
+                  </div>
+                </div>
+                <Suspense
+                  fallback={
+                    <div className="scene-wrap scene-loading">
+                      Preparing the 3D study…
+                    </div>
+                  }
+                >
+                  <ModelScene />
+                </Suspense>
+              </div>
+              <div className="hero-bottom">
+                <span>
+                  THE EXPERIMENT <span className="small-arrow">↘</span>
+                </span>
+                <span>SCROLL TO DISCOVER</span>
+              </div>
+            </section>
+            <section id="object" className="object-section">
+              <div className="shell object-grid">
+                <div className="section-index">
+                  <span>01 — THE OBJECT</span>
+                  <span className="index-line" />
+                </div>
+                <div>
+                  <h2>
+                    Meet the <em>Proof of Print.</em>
+                  </h2>
+                  <p className="lead">
+                    A pocket sized physical receipt for an internet native
+                    transaction. Designed for this experiment, made layer by
+                    layer on a Snapmaker U1.
+                  </p>
+                  <div className="spec-grid">
+                    <div>
+                      <span>01 / FORMAT</span>
+                      <strong>Ø 54 mm</strong>
+                      <small>Desk friendly token</small>
+                    </div>
+                    <div>
+                      <span>02 / MATERIAL</span>
+                      <strong>PLA</strong>
+                      <small>Color varies by run</small>
+                    </div>
+                    <div>
+                      <span>03 / PROCESS</span>
+                      <strong>FDM</strong>
+                      <small>Made on demand</small>
+                    </div>
+                  </div>
+                  <a href="#checkout" className="text-link">
+                    Own the experiment <ArrowRight size={18} />
+                  </a>
+                </div>
+              </div>
+            </section>
+            <section id="protocol" className="protocol-section shell">
+              <div className="section-index">
+                <span>02 — THE PROTOCOL</span>
+                <span className="index-line" />
+              </div>
+              <div className="protocol-intro">
+                <h2>
+                  The internet says <span>pay me.</span>
+                  <br />
+                  Your printer says <em>okay.</em>
+                </h2>
+                <p>
+                  HTTP 402 is the web’s “payment required” status. x402 gives it
+                  a working payment conversation. Here, the payment is a real
+                  Cardano transaction.
+                </p>
+              </div>
+              <div className="protocol-steps">
+                <div>
+                  <span className="step-num">01</span>
+                  <span className="http-pill">POST /pay</span>
+                  <h3>Ask for the print</h3>
+                  <p>Your browser requests the protected print order.</p>
+                </div>
+                <div>
+                  <span className="step-num">02</span>
+                  <span className="http-pill hot">HTTP 402</span>
+                  <h3>Get the price</h3>
+                  <p>
+                    The API returns the exact ADA amount, address and mainnet
+                    payment rules.
+                  </p>
+                </div>
+                <div>
+                  <span className="step-num">03</span>
+                  <span className="http-pill">PAYMENT-SIGNATURE</span>
+                  <h3>Sign in your wallet</h3>
+                  <p>
+                    Your wallet signs a transaction. The hosted facilitator
+                    verifies and settles it.
+                  </p>
+                </div>
+                <div>
+                  <span className="step-num">04</span>
+                  <span className="http-pill green">HTTP 200</span>
+                  <h3>Make it tangible</h3>
+                  <p>
+                    Paid orders queue for a supervised print batch and delivery.
+                  </p>
+                </div>
+              </div>
+              <div className="protocol-note">
+                <span>↗</span>
+                <p>
+                  The live checkout below exposes each HTTP step and its payment
+                  receipt so you can see the protocol in action.
+                </p>
+              </div>
+            </section>
+            <section id="checkout" className="checkout-section">
+              <div className="shell">
+                <div className="checkout-head">
+                  <div>
+                    <span className="eyebrow">
+                      03 — FROM DIGITAL TO PHYSICAL
+                    </span>
+                    <h2>
+                      Your move<span className="period">.</span>
+                    </h2>
+                  </div>
+                  <p>
+                    One small object. One real Cardano transaction. A story you
+                    can put on your desk.
+                  </p>
+                </div>
+                <div className="checkout-grid">
+                  <div className="order-panel">
+                    <div className="panel-top">
+                      <span>YOUR ORDER / 001</span>
+                      <span>
+                        ●{" "}
+                        {catalog
+                          ? catalog.availability === "available" &&
+                            catalog.printerState === "printing"
+                            ? "PRINTING · ORDERS OPEN"
+                            : availabilityText[catalog.availability].label
+                          : "CHECKING"}
+                      </span>
+                    </div>
+                    {catalog && catalog.availability !== "available" && (
+                      <div className="availability-note" role="status">
+                        <strong>
+                          {availabilityText[catalog.availability].label}
+                        </strong>
+                        <p>{availabilityText[catalog.availability].detail}</p>
+                      </div>
+                    )}
+                    <div className="product-row">
+                      <div className="product-symbol">✳</div>
+                      <div>
+                        <strong>Proof of Print</strong>
+                        <small>3D printed token · quantity 1</small>
+                      </div>
+                      <b>₳ {ada(catalog?.product.priceLovelace)}</b>
+                    </div>
+                    <div className="divider" />
+                    <div className="price-row">
+                      <span>Print + handling</span>
+                      <strong>₳ {ada(catalog?.product.priceLovelace)}</strong>
+                    </div>
+                    <p className="fineprint">
+                      Delivery currently available within Germany. We’ll use
+                      your address solely to fulfill this order. Shipping is
+                      included in the displayed price.
+                    </p>
+                    {!order ? (
+                      <form onSubmit={saveOrder} className="order-form">
+                        <label>
+                          Your name
+                          <input
+                            name="name"
+                            required
+                            maxLength={100}
+                            placeholder="Ada Lovelace"
+                          />
+                        </label>
+                        <label>
+                          Email for order questions
+                          <input
+                            type="email"
+                            name="email"
+                            required
+                            maxLength={160}
+                            placeholder="ada@example.com"
+                          />
+                        </label>
+                        <label>
+                          Street and house number
+                          <input
+                            name="addressLine1"
+                            required
+                            maxLength={180}
+                            placeholder="Example Street 42"
+                          />
+                        </label>
+                        <label>
+                          Address addition <small>optional</small>
+                          <input
+                            name="addressLine2"
+                            maxLength={180}
+                            placeholder="Apartment, c/o"
+                          />
+                        </label>
+                        <div className="form-pair">
+                          <label>
+                            Postal code
+                            <input
+                              name="postalCode"
+                              required
+                              pattern="[0-9]{5}"
+                              placeholder="10115"
+                            />
+                          </label>
+                          <label>
+                            City
+                            <input
+                              name="city"
+                              required
+                              maxLength={100}
+                              placeholder="Berlin"
+                            />
+                          </label>
+                        </div>
+                        <label>
+                          Country
+                          <select name="country" required defaultValue="DE">
+                            <option value="DE">Germany</option>
+                          </select>
+                        </label>
+                        <button
+                          className="primary form-submit"
+                          disabled={busy || !catalog || catalog.paused}
+                        >
+                          {busy ? "PREPARING…" : "CONTINUE TO PAYMENT"}{" "}
+                          <ArrowRight size={18} />
+                        </button>
+                        <p className="form-disclaimer">
+                          By continuing, you agree to the delivery and refund
+                          notes below. No wallet access is requested until you
+                          choose to pay.
+                        </p>
+                      </form>
+                    ) : (
+                      <div className="order-state">
+                        <div className="state-header">
+                          <Check size={18} /> ORDER{" "}
+                          {order.id.slice(0, 8).toUpperCase()}
+                        </div>
+                        <p>
+                          Status:{" "}
+                          <strong>{order.status.replaceAll("_", " ")}</strong>
+                        </p>
+                        {order.transaction && (
+                          <a
+                            className="text-link"
+                            target="_blank"
+                            rel="noreferrer"
+                            href={txUrl(order.transaction, order.network)}
+                          >
+                            View transaction <ExternalLink size={15} />
+                          </a>
+                        )}
+                        {order.status === "AWAITING_PAYMENT" && (
+                          <div className="wallet-connect">
+                            <label>
+                              Choose your CIP-30 wallet
+                              <select
+                                value={selectedWallet}
+                                onChange={(e) => {
+                                  setSelectedWallet(e.target.value);
+                                  setSigner(null);
+                                  setWalletAddress("");
+                                }}
+                              >
+                                {wallets.map((name) => (
+                                  <option key={name} value={name}>
+                                    {name}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <button type="button" onClick={refreshWallets}>
+                              Refresh wallets
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busy || !selectedWallet}
+                              onClick={connectWallet}
+                            >
+                              Connect wallet
+                            </button>
+                            {walletAddress && (
+                              <small>
+                                Connected: {walletName} ·{" "}
+                                {walletAddress.slice(0, 16)}…
+                              </small>
+                            )}
+                          </div>
+                        )}
+                        {order.status === "AWAITING_PAYMENT" && (
+                          <button
+                            className="primary form-submit"
+                            onClick={
+                              sessionStorage.getItem("print-prepared")
+                                ? retryPayment
+                                : pay
+                            }
+                            disabled={
+                              busy ||
+                              (!signer &&
+                                !sessionStorage.getItem("print-prepared"))
+                            }
+                          >
+                            {busy
+                              ? "PROCESSING…"
+                              : sessionStorage.getItem("print-prepared")
+                                ? "RECHECK SIGNED PAYMENT"
+                                : "SIGN & PAY ON CARDANO"}{" "}
+                            <ArrowRight size={18} />
+                          </button>
+                        )}
+                        <button className="subtle" onClick={reset}>
+                          Start another order
+                        </button>
+                      </div>
+                    )}
+                    {message && (
+                      <div className="error-message" role="alert">
+                        {message}
+                      </div>
+                    )}
+                  </div>
+                  <div className="trace-panel">
+                    <div className="panel-top">
+                      <span>LIVE PROTOCOL TRACE</span>
+                      <span className="live-indicator">● LIVE</span>
+                    </div>
+                    <div className="terminal">
+                      <div className="terminal-title">
+                        <span className="terminal-dots">● ● ●</span>{" "}
+                        payment.session{" "}
+                        <span>
+                          {catalog?.network?.split(":")[1].toUpperCase() ||
+                            "NETWORK"}
+                        </span>
+                      </div>
+                      {steps.length ? (
+                        steps.map((s, i) => (
+                          <div className="trace-step" key={`${s.id}-${i}`}>
+                            <span className="trace-index">
+                              {String(i + 1).padStart(2, "0")}
+                            </span>
+                            <div>
+                              <strong>{s.title}</strong>
+                              {"detail" in s && (
+                                <pre>{JSON.stringify(s.detail, null, 2)}</pre>
+                              )}
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="terminal-empty">
+                          <span className="cursor">▌</span>
+                          <p>
+                            Your live HTTP conversation will appear here when
+                            you pay.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    <div className="trace-foot">
+                      <ShieldCheck size={18} /> The server never sees your
+                      wallet keys. Your delivery address is visible only to the
+                      operator.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+            <section className="faq shell">
+              <div>
+                <span className="eyebrow">A FEW GOOD QUESTIONS</span>
+                <h2>
+                  Small print.
+                  <br />
+                  <em>Big idea.</em>
+                </h2>
+              </div>
+              <div className="faq-list">
+                <details>
+                  <summary>
+                    Is this a real purchase? <ChevronDown size={18} />
+                  </summary>
+                  <p>
+                    Yes. This is Cardano{" "}
+                    {catalog?.network?.split(":")[1] || "network"}. Confirm the
+                    ADA amount in your wallet before signing. On mainnet this is
+                    a real purchase. On preprod, test ADA has no monetary value;
+                    any print and delivery remains subject to operator testing.
+                  </p>
+                </details>
+                <details>
+                  <summary>
+                    When will my print ship? <ChevronDown size={18} />
+                  </summary>
+                  <p>
+                    Prints are grouped into small supervised batches of up to
+                    four. This is a small experiment, so timing can vary. We
+                    will contact you by email if there is a problem.
+                  </p>
+                </details>
+                <details>
+                  <summary>
+                    What if printing fails? <ChevronDown size={18} />
+                  </summary>
+                  <p>
+                    The operator reviews failed jobs and can arrange a reprint
+                    or a manual refund. On-chain payments are not automatically
+                    reversible. Contact the operator using the address published
+                    in the repository.
+                  </p>
+                </details>
+                <details>
+                  <summary>
+                    What happens to my address? <ChevronDown size={18} />
+                  </summary>
+                  <p>
+                    Your delivery details are stored in the order database for
+                    fulfillment. They are never placed on chain or sent to the
+                    printer. The public source code contains no customer data.
+                  </p>
+                </details>
+              </div>
+            </section>
+          </main>
+          <footer>
+            <div className="shell footer-grid">
+              <div className="footer-brand">
+                402<span>✳</span>
+              </div>
+              <div>
+                <span>AN OPEN EXPERIMENT</span>
+                <p>
+                  Making internet native payments tangible, one layer at a time.
+                </p>
+              </div>
+              <div>
+                <span>FOLLOW THE BUILD</span>
+                <a
+                  href="https://github.com/Kammerlo/x402-cardano-3dprinting-service"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  SOURCE ON GITHUB ↗
+                </a>
+              </div>
+              <div className="footer-end">CARDANO MAINNET · 2026</div>
+            </div>
+          </footer>
+        </>
+      )}
+    </div>
+  );
 }
