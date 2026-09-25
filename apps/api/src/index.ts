@@ -23,6 +23,7 @@ const safeOrder = (o: Order) => ({
   priceLovelace: o.price_lovelace,
   network: o.network,
   transaction: o.tx_hash,
+  signedTransaction: o.signed_tx_hash || null,
   batchId: o.batch_id,
   createdAt: o.created_at,
 });
@@ -30,7 +31,7 @@ async function orderFor(env: Env, id: string, secret: string | undefined) {
   if (!/^[0-9a-f-]{36}$/i.test(id) || !secret) return null;
   const rows = await query<Order>(
     env,
-    "SELECT id, access_hash, status, network, price_lovelace, tx_hash, batch_id, created_at FROM orders WHERE id=$1",
+    "SELECT o.id, o.access_hash, o.status, o.network, o.price_lovelace, o.tx_hash, o.batch_id, o.created_at, p.tx_hash AS signed_tx_hash FROM orders o LEFT JOIN payment_attempts p ON p.order_id=o.id WHERE o.id=$1",
     [id],
   );
   return rows[0] && constantEqual(await digest(secret), rows[0].access_hash)
@@ -279,9 +280,9 @@ app.get("/api/admin/orders", async (c) => {
     query(
       env,
       `SELECT o.id,o.customer_name,o.email,o.address_line1,o.address_line2,o.postal_code,o.city,o.country,o.status,o.network,o.price_lovelace,o.tx_hash,o.batch_id,o.created_at,
-    b.status AS batch_status FROM orders o LEFT JOIN print_batches b ON b.id=o.batch_id
+    b.status AS batch_status, p.tx_hash AS signed_tx_hash FROM orders o LEFT JOIN print_batches b ON b.id=o.batch_id LEFT JOIN payment_attempts p ON p.order_id=o.id
     WHERE o.batch_id=(SELECT current_batch_id FROM shop_settings WHERE id=1)
-       OR o.id IN (SELECT id FROM orders WHERE ($3='' OR status=$3) AND ($1='' OR id::text=$1 OR email ILIKE '%' || $1 || '%' OR customer_name ILIKE '%' || $1 || '%')
+       OR o.id IN (SELECT id FROM orders WHERE ($3='' OR status=$3) AND ($1='' OR id::text=$1 OR email ILIKE '%' || $1 || '%' OR customer_name ILIKE '%' || $1 || '%' OR tx_hash ILIKE '%' || $1 || '%' OR EXISTS (SELECT 1 FROM payment_attempts search_attempt WHERE search_attempt.order_id=orders.id AND search_attempt.tx_hash ILIKE '%' || $1 || '%'))
          ORDER BY created_at DESC,id LIMIT 100 OFFSET $2)
     ORDER BY o.created_at DESC,o.id`,
       [search, offset, filter],

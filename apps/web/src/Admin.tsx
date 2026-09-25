@@ -20,6 +20,7 @@ type Order = {
   batch_id: string | null;
   created_at: string;
   tx_hash: string | null;
+  signed_tx_hash?: string | null;
   network: string;
 };
 type Batch = {
@@ -249,7 +250,7 @@ export function Admin({ onClose }: { onClose: () => void }) {
       (order) =>
         (!tab || order.status === tab) &&
         (!search ||
-          `${order.id} ${order.customer_name} ${order.email}`
+          `${order.id} ${order.customer_name} ${order.email} ${order.tx_hash || ""} ${order.signed_tx_hash || ""}`
             .toLowerCase()
             .includes(search.toLowerCase())),
     ) || [];
@@ -556,10 +557,11 @@ export function Admin({ onClose }: { onClose: () => void }) {
               Search orders
               <input
                 type="search"
-                placeholder="Name, email or order ID"
+                placeholder="Name, email, order ID or transaction hash"
                 value={search}
                 onChange={(event) => {
                   setSearch(event.target.value);
+                  if (event.target.value) setTab("");
                   setOffset(0);
                 }}
               />
@@ -589,6 +591,20 @@ export function Admin({ onClose }: { onClose: () => void }) {
                     >
                       Mark as sent ✓
                     </button>
+                  )}
+                  {(order.tx_hash || order.signed_tx_hash) && (
+                    <div className="order-payment">
+                      <small>{order.tx_hash ? "Payment settled" : "Signed · settlement unconfirmed"}</small>
+                      <code style={{ display: "block", overflowWrap: "anywhere" }}>{order.tx_hash || order.signed_tx_hash}</code>
+                      <button type="button" onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText((order.tx_hash || order.signed_tx_hash)!);
+                          setNotice("Transaction hash copied.");
+                        } catch { setError("Could not copy automatically. Select the transaction hash and copy it manually."); }
+                      }}>Copy transaction hash</button>
+                      <a target="_blank" rel="noreferrer" href={`https://${order.network === "cardano:preprod" ? "preprod." : ""}cardanoscan.io/transaction/${order.tx_hash || order.signed_tx_hash}`}>Check on explorer ↗</a>
+                      {!order.tx_hash && <small>A signed hash does not prove submission or payment. It may not appear on the explorer yet.</small>}
+                    </div>
                   )}
                   {recovery(order)}
                 </article>

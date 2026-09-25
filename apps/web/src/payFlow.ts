@@ -39,6 +39,7 @@ export type FlowStep = {
 };
 
 export interface PreparedPayment {
+  transaction?: string;
   url: string;
   headers: Record<string, string>;
   payload: PaymentPayload;
@@ -183,6 +184,7 @@ export async function runPaymentFlow(
   });
 
   const payment: PreparedPayment = {
+    transaction: decodeCardanoTransaction(String(payload.payload.transaction)).txHash,
     url,
     payload,
     headers: {
