@@ -61,6 +61,7 @@ async function liveUtxos(utxos: readonly UTxO.UTxO[], provider: Blockfrost): Pro
 export async function createCip30Signer(
   walletApi: unknown,
   provider: Blockfrost,
+  preflight = false,
 ): Promise<ClientCardanoSigner> {
   if (!provider.projectId?.trim()) {
     throw new Error("Set the matching VITE_BLOCKFROST_*_PROJECT_ID for this network and restart the web server.");
@@ -74,6 +75,14 @@ export async function createCip30Signer(
   await checkNetwork();
   const client = Client.make(provider.network === "cardano:mainnet" ? mainnet : preprod).withBlockfrost(provider).withCip30(walletApi as never);
   const address = Address.toBech32(await client.address());
+  if (preflight) {
+    // CIP-30 labels both preview and preprod as testnet. Checking live inputs
+    // against this shop's provider catches mismatched test networks too.
+    const utxos = await client.getWalletUtxos();
+    if (!utxos.length) throw new Error("Your wallet has no funds on the selected network. No order has been saved.");
+    await liveUtxos(utxos, provider);
+    await checkNetwork();
+  }
   return {
     getAddress: () => address,
     async buildAndSignPaymentTransaction(input) {

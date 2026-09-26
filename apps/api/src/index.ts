@@ -163,6 +163,8 @@ app.post("/api/orders", async (c) => {
     b = await c.req.json().catch(() => null);
   if (!network || !env.FACILITATOR_URL || !sellerIsValid(env, network))
     return error("Payment configuration incomplete", 503);
+  if (b?.expectedNetwork !== undefined && b.expectedNetwork !== network)
+    return error("The shop network changed. Refresh and check your wallet before creating an order.", 409);
   const name = clean(b?.name, 100),
     email = clean(b?.email, 160),
     line1 = clean(b?.addressLine1, 180),

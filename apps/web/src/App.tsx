@@ -145,10 +145,12 @@ export default function App() {
     try {
       const f = new FormData(e.currentTarget);
       const body = Object.fromEntries(f.entries());
+      if (!catalog) throw new Error("The shop is still loading. Please try again shortly.");
+      await prepareWallet(true);
       const created = await request("/api/orders", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...body, productId: "proof-token" }),
+        body: JSON.stringify({ ...body, productId: "proof-token", expectedNetwork: catalog.network }),
       });
       setOrder(created);
       document
@@ -160,15 +162,8 @@ export default function App() {
       setBusy(false);
     }
   };
-  const connectWallet = async () => {
-    if (!catalog || !selectedWallet) {
-      refreshWallets();
-      setMessage("Install a CIP-30 wallet and select it here.");
-      return;
-    }
-    setBusy(true);
-    setMessage("");
-    try {
+  const prepareWallet = async (preflight = false) => {
+      if (!catalog || !selectedWallet) throw new Error("Select a CIP-30 wallet before continuing. No order has been saved.");
       const wallet = (window as any).cardano?.[selectedWallet];
       if (typeof wallet?.enable !== "function")
         throw new Error(
@@ -185,10 +180,16 @@ export default function App() {
         projectId: preprod
           ? import.meta.env.VITE_BLOCKFROST_PREPROD_PROJECT_ID || ""
           : import.meta.env.VITE_BLOCKFROST_MAINNET_PROJECT_ID || "",
-      });
+      }, preflight);
       setSigner(connected);
       setWalletAddress(connected.getAddress());
       setWalletName(selectedWallet);
+  };
+  const connectWallet = async () => {
+    setBusy(true);
+    setMessage("");
+    try {
+      await prepareWallet();
     } catch (err) {
       setMessage(String(err instanceof Error ? err.message : err));
     } finally {
@@ -614,6 +615,19 @@ export default function App() {
                     {!order ? (
                       <form onSubmit={saveOrder} className="order-form">
                         <label>
+                          Payment wallet
+                          <select value={selectedWallet} disabled={busy} onChange={(event) => {
+                            setSelectedWallet(event.target.value);
+                            setSigner(null);
+                            setWalletAddress("");
+                          }} required>
+                            {!wallets.length && <option value="">No wallet detected</option>}
+                            {wallets.map((name) => <option key={name} value={name}>{name}</option>)}
+                          </select>
+                        </label>
+                        <button type="button" disabled={busy} onClick={refreshWallets}>Refresh wallets</button>
+                        <p className="fineprint">We check your wallet and the shop’s network before saving your order. No payment is signed during this check.</p>
+                        <label>
                           Your name
                           <input
                             name="name"
@@ -677,15 +691,14 @@ export default function App() {
                         </label>
                         <button
                           className="primary form-submit"
-                          disabled={busy || !catalog || catalog.paused}
+                          disabled={busy || !catalog || catalog.paused || !selectedWallet}
                         >
                           {busy ? "PREPARING…" : "CONTINUE TO PAYMENT"}{" "}
                           <ArrowRight size={18} />
                         </button>
                         <p className="form-disclaimer">
                           By continuing, you agree to the delivery and refund
-                          notes below. No wallet access is requested until you
-                          choose to pay.
+                          notes below. Continuing connects your selected wallet to validate the network. You approve the payment separately.
                         </p>
                       </form>
                     ) : (
