@@ -8,3 +8,4 @@ dist/
 .DS_Store
 
 prints/*.gcode
+!.env.gateway.example
