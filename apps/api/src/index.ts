@@ -342,6 +342,7 @@ app.get("/api/admin/orders", async (c) => {
       "SHIPPED",
       "NEEDS_REVIEW",
       "AWAITING_PAYMENT",
+      "PAYMENT_REQUIRED_WITH_TX",
       "REFUNDED",
     ].includes(filter)
   )
@@ -352,7 +353,7 @@ app.get("/api/admin/orders", async (c) => {
       `SELECT o.id,o.customer_name,o.email,o.address_line1,o.address_line2,o.postal_code,o.city,o.country,o.status,o.network,o.price_lovelace,o.tx_hash,o.batch_id,o.created_at,
     b.status AS batch_status, p.tx_hash AS signed_tx_hash FROM orders o LEFT JOIN print_batches b ON b.id=o.batch_id LEFT JOIN payment_attempts p ON p.order_id=o.id
     WHERE o.batch_id=(SELECT current_batch_id FROM shop_settings WHERE id=1)
-       OR o.id IN (SELECT id FROM orders WHERE ($3='' OR status=$3) AND ($1='' OR id::text=$1 OR email ILIKE '%' || $1 || '%' OR customer_name ILIKE '%' || $1 || '%' OR tx_hash ILIKE '%' || $1 || '%' OR EXISTS (SELECT 1 FROM payment_attempts search_attempt WHERE search_attempt.order_id=orders.id AND search_attempt.tx_hash ILIKE '%' || $1 || '%'))
+       OR o.id IN (SELECT id FROM orders WHERE ($3='' OR status=$3 OR ($3='PAYMENT_REQUIRED_WITH_TX' AND status='AWAITING_PAYMENT' AND EXISTS (SELECT 1 FROM payment_attempts filter_attempt WHERE filter_attempt.order_id=orders.id AND filter_attempt.tx_hash IS NOT NULL AND filter_attempt.tx_hash<>''))) AND ($1='' OR id::text=$1 OR email ILIKE '%' || $1 || '%' OR customer_name ILIKE '%' || $1 || '%' OR tx_hash ILIKE '%' || $1 || '%' OR EXISTS (SELECT 1 FROM payment_attempts search_attempt WHERE search_attempt.order_id=orders.id AND search_attempt.tx_hash ILIKE '%' || $1 || '%'))
          ORDER BY created_at DESC,id LIMIT 100 OFFSET $2)
     ORDER BY o.created_at DESC,o.id`,
       [search, offset, filter],
@@ -380,7 +381,10 @@ app.get("/api/admin/orders", async (c) => {
     ),
     query(
       env,
-      "SELECT status,count(*)::int AS count FROM orders GROUP BY status",
+      `SELECT o.status,count(*)::int AS count,
+       count(*) FILTER (WHERE o.status='AWAITING_PAYMENT' AND EXISTS (
+         SELECT 1 FROM payment_attempts p WHERE p.order_id=o.id AND p.tx_hash IS NOT NULL AND p.tx_hash<>''
+       ))::int AS signed_count FROM orders o GROUP BY o.status`,
     ),
   ]);
   const current = settings[0]?.current_batch_id
@@ -393,6 +397,7 @@ app.get("/api/admin/orders", async (c) => {
   return c.json({
     orders: rows,
     totals: Object.fromEntries(totals.map((r) => [r.status, r.count])),
+    paymentRequiredWithTxCount: totals.find((r) => r.status === "AWAITING_PAYMENT")?.signed_count || 0,
     batches,
     attempts,
     paused: settings[0]?.paused,
