@@ -33,3 +33,10 @@ jobs:
         run: |
           docker build -f Dockerfile.web -t print-web-test .
           docker run --rm --add-host api:127.0.0.1 print-web-test nginx -t
+
+      - name: Validate standalone gateway deployment
+        run: |
+          cp .env.gateway.example .env.gateway
+          docker compose -f docker-compose.gateway.yml config --quiet
+          docker build -f Dockerfile.gateway -t print-gateway-test .
+          docker run --rm --read-only --tmpfs /tmp:size=64m,mode=1777 --tmpfs /data --cap-drop ALL --security-opt no-new-privileges:true print-gateway-test node --import tsx --input-type=module -e 'import { durableWrite } from "./apps/gateway/src/journal.ts"; import { availablePlates } from "./apps/gateway/src/plates.ts"; await durableWrite("/data/smoke.json", "{}"); console.log("Gateway journal writable; TS loader ready", await availablePlates("/data"));'

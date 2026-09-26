@@ -1,0 +1,35 @@
+# Standalone gateway: docker compose -f docker-compose.gateway.yml up -d --build
+# Reads .env.gateway; never publishes ports or starts an API/database.
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file:
+      - .env.gateway
+    environment:
+      NODE_ENV: production
+      PRINTS_DIR: /prints
+      STATE_DIR: /data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./prints:/prints:ro
+      - gateway_data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  # Same key as gateway-compose.yml to retain the journal when switching files
+  # in the same checkout / Compose project.
+  gateway_data:
