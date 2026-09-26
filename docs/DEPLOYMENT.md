@@ -1,47 +1,69 @@
-# Deployment and real end-to-end verification
+# Hosted deployment: Cloudflare Worker, Neon and home gateway
 
-This service has **no simulation mode**. Use preprod for the first complete paid test, including the physical U1. Neither the facilitator nor the printer is included in the Compose stack. Before public sales, confirm hosted facilitator compatibility, your U1 endpoint and your chosen sliced plates with an operator present. The app defaults to no network until `CARDANO_NETWORK` is set.
+The Worker serves the built Vite storefront and the API on one HTTPS origin. Neon stores orders and payment recovery state. A separate Docker gateway polls the Worker and reaches the printer on its private LAN; it has no inbound port. See [local Compose setup](../README.md#run-locally-with-real-services) if you are developing on one machine. There is no simulated payment or printer path.
 
-## Network and facilitator
+## Prerequisites
 
-Choose exactly `cardano:preprod` or `cardano:mainnet` as `CARDANO_NETWORK`. Match the seller address (`addr_test1…` for preprod; `addr1…` for mainnet), Blockfrost project ID, wallet network and facilitator capabilities. The facilitator must support x402 v2 `exact` Cardano for that network and implement `/verify`, `/settle`, `/supported`. Configure its base URL as `FACILITATOR_URL`; the current HTTP client does not implement a proprietary authorization scheme. If your hosted facilitator requires an API key, its exact header contract must be added to the resource server adapter before that host can be used.
+- Node 22+, npm, a Cloudflare account with Workers enabled, a Neon Postgres database and a hosted x402 v2 facilitator supporting Cardano `exact` on your selected network.
+- A seller address, funded CIP-30 buyer wallet, and Blockfrost project ID on the **same** network (`cardano:preprod` first; `cardano:mainnet` only after verification).
+- A server with Docker Engine and Compose that can reach both the Worker over HTTPS and Moonraker over a private LAN/VPN, plus U1-tested `proof-token-N.gcode` files. See [gateway setup](GATEWAY_DEPLOYMENT.md).
 
-Run `curl "$FACILITATOR_URL/supported"` and check the configured network. In a browser on preprod, verify HTTP 402, wallet signing, facilitator settlement, the `PAYMENT-RESPONSE` header and the transaction in an explorer. The browser's Blockfrost ID is embedded in public JavaScript; use provider quotas/domain restrictions. The gateway can start printing only after an operator creates a batch from paid orders.
+The facilitator must implement `/supported`, `/verify` and `/settle`. Check `/supported` before taking orders. The current API client has no custom facilitator authentication header; a service requiring one needs an adapter change. A Blockfrost project ID supplied to the web build is visible to every browser; use a dedicated project and applicable quotas/restrictions.
 
-Changing a running shop's network makes old unpaid orders ineligible for payment; existing paid orders retain their recorded network. Do not mix preprod and mainnet orders in one active launch without reviewing each order.
+## 1. Apply Neon migrations
 
-## Neon and migrations
+Back up an existing production database first. From the repository root, use a Neon connection string with SSL. Apply every SQL file in numeric order, **001 through 009**. For example:
 
-Create a Neon Postgres project and apply `db/001_init.sql` through `db/008_admin_and_dynamic_batches.sql` in filename order. For an existing database, apply only the migrations it has not yet received; migrations are idempotent, but back up before upgrading. Migration 005 preserves existing batches and selects the oldest outstanding plate as the current one. Any additional older queued plates are drained before new paid orders are batched. Migration 006 adds an operator-issued rearm counter for the outbound gateway. Apply these migrations **before** deploying the updated API or gateway. Each order snapshots its network and price. A pre-submit payment attempt records the tx hash and signed payload so the same transaction can be reconciled; only one attempt per order is accepted.
+```bash
+export DATABASE_URL='postgresql://USER:PASSWORD@HOST/neondb?sslmode=require'
+for migration in db/[0-9][0-9][0-9]_*.sql; do
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration" || exit 1
+done
+unset DATABASE_URL
+```
 
-## Cloudflare API
+Install `psql` locally, or run each file in Neon's SQL editor in the same order. Existing installations should apply only unapplied migrations and verify their backups before upgrading. Migration 009 adds chain payment checks. Apply migrations before deploying a newer API. Do not share the connection string or paste it in a shell command that will be committed.
 
-From `apps/api`, set `CARDANO_NETWORK`, `FRONTEND_ORIGIN`, `PRICE_LOVELACE` in `wrangler.jsonc`. The checked-in network is preprod; deliberately change it to mainnet only when ready. Set secrets using `npx wrangler secret put` for `DATABASE_URL`, `FACILITATOR_URL`, `SELLER_ADDRESS`, `ADMIN_TOKEN`, and `GATEWAY_TOKEN`; generate the latter two independently with `openssl rand -hex 32`. Then run `npx wrangler deploy`. Do not set `LOCAL_DATABASE_URL` on a Worker. The gateway only polls outbound; no public gateway URL is needed.
+## 2. Build and deploy the Worker
 
-`GET /api/health` confirms configuration presence, while `/api/catalog` indicates gateway liveness and printer operational state from a fresh heartbeat. Neither endpoint alone proves a successful on-chain transaction. Apply a WAF/rate limit to order creation and admin authentication, configure database connection limits, and keep logs free of addresses/payment headers. A signed payment already attached to an order must be reconciled before another transaction is attempted. The database serializes batch/confirmation transitions, but actual throughput depends on Neon, facilitator, Blockfrost, Cloudflare, and U1 quotas; run a load test before public sales.
+The repository root is the build directory. Run `npm ci`, then supply the network's browser provider ID at **build time**:
 
-Cloudflare Workers Free has a 10 ms CPU limit per request; actual x402 SDK work may require a paid plan. Verify with your own deployment and traffic. See the [Workers limits](https://developers.cloudflare.com/workers/platform/limits/).
+```bash
+npm ci
+VITE_BLOCKFROST_PREPROD_PROJECT_ID=YOUR_PREPROD_ID npm run build -w @print/web
+npx wrangler login
+npx wrangler deploy --config apps/api/wrangler.jsonc
+```
 
-## Vercel frontend
+For mainnet also provide `VITE_BLOCKFROST_MAINNET_PROJECT_ID` at build time. Build again whenever an ID changes. Wrangler's `apps/api/wrangler.jsonc` includes `../web/dist` as the static asset directory and routes `/api/*` to the Worker. Use one origin for the storefront, `/admin` and API. If Cloudflare's Git build UI is used, set the root directory to the **repository root**, install with `npm ci`, build with `npm run build -w @print/web`, and deploy with `npx wrangler deploy --config apps/api/wrangler.jsonc`. Add the `VITE_BLOCKFROST_*` build variable there as appropriate. Do not put admin/gateway/database secrets in build variables or `VITE_*`.
 
-Import the repository, set Root Directory to the repository root, Framework Preset `Other`, Install Command `npm ci`, Build Command `npm run build -w @print/web`, Output Directory `apps/web/dist`. Configure `VITE_API_URL` to the Worker URL and `VITE_BLOCKFROST_PREPROD_PROJECT_ID` and/or `VITE_BLOCKFROST_MAINNET_PROJECT_ID` for the network you will run. Redeploy the frontend after changing provider IDs. Set `FRONTEND_ORIGIN` on the Worker to the exact Vercel production origin. `vercel.json` handles `/admin` SPA routing.
+In Cloudflare Workers & Pages → your Worker → Settings → Variables and Secrets, set:
 
-**Vercel Hobby restricts commercial use.** For real paid physical goods, use an eligible commercial Vercel plan or an eligible alternative static host. The app is provider-independent static Vite output; the Worker API remains separate.
+| Name | Kind | Value |
+| --- | --- | --- |
+| `CARDANO_NETWORK` | Variable | `cardano:preprod` initially |
+| `PRICE_LOVELACE` | Variable | Price in lovelace, e.g. `5000000` |
+| `FRONTEND_ORIGIN` | Variable | Exact Worker HTTPS origin, without trailing slash |
+| `DATABASE_URL` | Secret | Neon connection string, with SSL |
+| `FACILITATOR_URL` | Secret | Hosted facilitator base URL |
+| `SELLER_ADDRESS` | Secret | Matching receiving address |
+| `ADMIN_TOKEN` | Secret | One `openssl rand -hex 32` result |
+| `GATEWAY_TOKEN` | Secret | A **different** `openssl rand -hex 32` result |
 
-## Home U1 gateway
+Variables and secrets can also be set with `npx wrangler secret put NAME --config apps/api/wrangler.jsonc` for each secret. Do not write real values into `wrangler.jsonc`, `.env.example`, source, CI, or a public issue. Keep `ADMIN_ALLOW_BEARER` unset. The admin expects HTTPS and an exact same-origin `FRONTEND_ORIGIN`; `ADMIN_ALLOW_INSECURE_LOCALHOST` is for local HTTP only. Redeploy/restart if your platform requires it after changing variables.
 
-Verify LAN calls to `GET /printer/objects/query?print_stats`, `POST /server/files/upload` and `POST /printer/print/start?filename=…`. Slice inspected U1-specific plates as `proof-token-N.gcode`. Counts are discovered from nonempty regular files; supply a one-object file for small queues.
+Configure an access policy with MFA for `/admin` and `/api/admin/*`, without putting an interactive challenge in front of `/api/gateway/*`. Configure edge rate limits for new orders and admin login. Workers, Neon, facilitator and provider quotas must be measured against expected bursts.
 
-Copy `.env.example` to `.env.gateway` and set `API_URL`, `GATEWAY_TOKEN`, `MOONRAKER_URL`, optional `MOONRAKER_API_KEY`, `PRINTS_DIR=/prints`, and `STATE_DIR=/data`. Run `docker compose -f gateway-compose.yml up --build -d`. The gateway polls outbound; it has no inbound listener. Every start requires the admin's empty-plate confirmation and a fresh readiness check. Use the unified **Start the next batch** button; old create/confirm/rearm endpoints are disabled.
+## 3. Connect the home gateway
 
-### Admin origin and credentials
+Follow [the standalone gateway guide](GATEWAY_DEPLOYMENT.md) and copy `.env.gateway.example` to a private `.env.gateway`. `API_URL` is this Worker's origin; `GATEWAY_TOKEN` must match the Worker secret exactly. The gateway sends outbound requests only. The operator physically checks the plate and authorizes each next batch in `/admin`. Paid orders remain in Neon if the printer or gateway is offline.
 
-Apply migration 008 before deploying API and gateway together. Use independent 64-character random hex keys. Serve the frontend and admin API under one HTTPS origin, and set `FRONTEND_ORIGIN` exactly. If hosting frontend and API on different providers, proxy `/api/admin/*` through the frontend origin so Strict cookies work; see [security](SECURITY.md). Keep admin bearer access disabled. For localhost HTTP only, explicitly set `ADMIN_ALLOW_INSECURE_LOCALHOST=true`; Compose forwards this setting.
+## 4. Verify before taking sales
 
-## Acceptance sequence
+1. Confirm `GET /api/health` shows configured payment settings and `GET /api/ready` reaches Neon. Neither proves a successful on-chain payment. Check gateway heartbeat and supported G-code sizes in admin.
+2. On **preprod**, complete a real wallet payment: inspect HTTP 402 and the `PAYMENT-RESPONSE`, transaction hash, settled order and chain confirmation. Interrupt one payment and reconcile the **same** signed transaction rather than asking for another signature.
+3. With the printer offline, verify payment still settles into a waiting order. Restore the gateway, empty the plate, start a batch in admin, inspect the actual print, then mark it sent. Test a restart mid-print and resolve ambiguous status manually.
+4. Restore a database backup into a separate database and reconcile its state against the chain and physical printer. Monitor 5xx, stale heartbeat, payment attempts needing review, queue age and disk usage. See [operations](OPERATIONS.md) and [security](SECURITY.md).
+5. Only after the above, switch **both** the Worker and web build to mainnet credentials, repeat a low-value real purchase, and publish your shop's terms, shipping/refund policy, privacy/contact details and applicable business notices. A payment success does not imply a physically successful print.
 
-1. On preprod, inspect `/supported`, API health and catalog readiness; confirm the U1 is idle and the chosen G-code files are loaded.
-2. Use a funded **preprod** CIP-30 wallet, select it in the UI and confirm the target address and amount. The buyer first receives actual HTTP 402; the signed retry uses `PAYMENT-SIGNATURE`.
-3. Verify facilitator settlement, transaction hash and recorded `PAID` order. Create a batch in `/admin`; observe gateway journal, Moonraker upload/start, `PRINTING`, `PRINTED` and the actual object on the plate.
-4. Interrupt a payment request and recheck **the same** signed transaction. Disconnect the gateway and verify a new order can still be paid and waits in the queue. Reconnect the gateway and verify a queued plate starts only when the U1 is idle. For a claimed job interrupted during printing, inspect the U1, use the admin review and reprint controls, and start again only after physical review.
-5. Only then switch the API to mainnet with a mainnet address/provider/facilitator and repeat a low-value controlled live purchase. Publish actual terms, privacy/contact, shipping and refund process, rate limits, backups and a commercial hosting plan before real customers.
+Changing a running shop's network leaves older unpaid orders ineligible for payment. Paid orders retain their recorded network. Do not mix networks casually, and do not attempt to resolve uncertain payments by creating fresh transactions.

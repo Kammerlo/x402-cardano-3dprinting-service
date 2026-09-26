@@ -16,13 +16,13 @@ chmod 600 .env.gateway
 nano .env.gateway
 ```
 
-If you already have the checkout, use it and preserve any existing `.env.gateway`. A private repository requires your own GitHub authentication.
+If you already have the checkout, use it and preserve any existing `.env.gateway`. If the repository is still private, authenticate Git on this server before cloning.
 
 Fill in these four values:
 
 | Variable | Value |
 | --- | --- |
-| `API_URL` | `https://x402-cardano-3dprinting-service.th-kammerlocher.workers.dev` |
+| `API_URL` | `https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev` |
 | `GATEWAY_TOKEN` | The exact existing gateway token configured in the Cloudflare Worker |
 | `MOONRAKER_URL` | Your printer's LAN URL, e.g. `http://192.168.1.100:7125` |
 | `MOONRAKER_API_KEY` | Your Moonraker key, or empty if authentication is not required for this host |
