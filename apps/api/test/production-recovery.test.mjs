@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { decodeCardanoTransaction } from "@x402/cardano";
 import app from "../src/index.ts";
+import { verifyOnChain } from "../src/chainPayment.ts";
 import { closeLocalPool } from "../src/db.ts";
 
 // Infrastructure integration tests. The facilitator is a deterministic test double;
@@ -264,8 +265,11 @@ test(
         if (path.endsWith("/blocks/latest")) return Response.json({ height: 120 });
         throw new Error(`Unexpected fetch: ${path}`);
       };
+      const directEvidence = await verifyOnChain(env, { id: order.id, network: env.CARDANO_NETWORK, price_lovelace: "5000000", signed_payload: signature, tx_hash: hash });
+      assert.equal(directEvidence.status, "CONFIRMED", JSON.stringify(directEvidence));
       const recoveredFromPay = await pay();
-      assert.equal(recoveredFromPay.status, 200, await recoveredFromPay.clone().text());
+      const attemptState = (await db.query("SELECT status,chain_check_after,receipt FROM payment_attempts WHERE order_id=$1", [order.id])).rows[0];
+      assert.equal(recoveredFromPay.status, 200, JSON.stringify({ response: await recoveredFromPay.clone().text(), attemptState }));
       assert.equal((await recoveredFromPay.json()).transaction, hash);
       assert.ok(pendingSettlements >= 1);
       assert.equal((await db.query("SELECT status FROM orders WHERE id=$1", [order.id])).rows[0].status, "PAID");
