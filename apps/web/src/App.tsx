@@ -675,10 +675,9 @@ export default function App() {
                         </label>
                         <div className="form-pair">
                           <label>
-                            Postal code
+                            Postal or ZIP code <small>if applicable</small>
                             <input
                               name="postalCode"
-                              required
                               maxLength={32}
                               placeholder="Postal or ZIP code"
                             />
