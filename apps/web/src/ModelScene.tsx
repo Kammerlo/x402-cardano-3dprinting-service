@@ -45,9 +45,9 @@ function splitModel(source: THREE.BufferGeometry) {
 export function ModelScene() {
   const mount = useRef<HTMLDivElement>(null);
   const explodedRef = useRef(false);
-  const spinRef = useRef(false);
+  const spinRef = useRef(true);
   const [exploded, setExploded] = useState(false);
-  const [spin, setSpin] = useState(false);
+  const [spin, setSpin] = useState(true);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
 
   useEffect(() => {
