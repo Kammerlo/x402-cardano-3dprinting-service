@@ -1,42 +1,65 @@
 # 402 Print Protocol
 
-A Cardano x402 storefront that turns an actual CIP-30 wallet payment into a supervised Snapmaker U1 print. The site explains HTTP 402, displays the payment conversation, tracks an order, and shows a rotatable 3D token from a centered top view. The admin starts supervised plates sized automatically from the available G-code files. The private `/admin` dashboard shows delivery details, country, a paginated shipping queue and print states. After each plate, the operator removes the prints, confirms that the plate is empty, and clicks **Start the next batch**. Reviewed failures can return to a new batch without another payment.
+**A Cardano payment you can hold in your hand.** This demo uses [x402](https://www.x402.org/) to sell a small 3D-printed token. A visitor connects a Cardano wallet, pays in ADA, and sees the HTTP payment exchange as it happens. After payment is recorded, an operator prints and ships the token.
 
-**Network:** Set `CARDANO_NETWORK=cardano:preprod` while validating the flow, then configure `cardano:mainnet` with matching seller and provider credentials for sales. There is no simulated payment or printer path. A configured hosted facilitator is required to settle payments. The U1 Moonraker service can be temporarily offline: paid jobs wait until it returns.
+[Open the preprod demo](https://x402-cardano-3dprinting-preprod.th-kammerlocher.workers.dev/) · [Deployment guide](docs/DEPLOYMENT.md)
 
-| Path | Purpose |
-| --- | --- |
-| `apps/web` | React/Vite storefront and private operator dashboard; Evolution SDK CIP-30 signer |
-| `apps/api` | Hono x402 resource server for Workers or Node, Neon/Postgres orders, settlement journal and gateway queue |
-| `apps/gateway` | Outbound-polling home agent, authenticated to API, with Moonraker upload/start/status |
-| `model` | OpenSCAD source and printable 54 mm STL |
-| `prints` | Operator-sliced U1 G-code plates with dynamic batch sizes (G-code is never committed) |
-| `db` | Schema plus incremental migrations |
+> **Preprod is a test network.** Payments there use test ADA and do not result in a shipment. Mainnet requires separate configuration and real ADA.
 
-## Run locally with real services
+## The idea
 
-1. Copy `.env.local.example` to `.env`. Choose preprod or mainnet. Enter your **working hosted facilitator URL**, matching `addr_test1…` or `addr1…` seller address, Blockfrost project ID for that network, and independent random admin/gateway tokens (`openssl rand -hex 32`). Set `MOONRAKER_URL` to your U1's LAN Moonraker endpoint reachable by Docker.
-2. Slice your chosen plate sizes and place `proof-token-N.gcode` in `prints/`, where N is the actual object count. Include a 1-object file for small queues.
-3. For local HTTP only, set `FRONTEND_ORIGIN=http://localhost:5173` and `ADMIN_ALLOW_INSECURE_LOCALHOST=true`. Production requires your HTTPS origin. Run `docker compose up --build`. Wait for the gateway heartbeat. Open http://localhost:5173. Select your CIP-30 wallet on the configured network, place an order and confirm the actual transaction. The operator view is at http://localhost:5173/admin with your `ADMIN_TOKEN`.
-4. Sign into `/admin`, inspect and empty the U1 plate, tick the confirmation, then click **Start the next batch**. The API checks readiness and selects the largest available batch that fits the paid queue. No further plate starts until you confirm it is empty again. Use **Ready to send → Mark as sent** for fulfillment; recovery tools are under **More actions**.
+An API can answer a request with **HTTP 402 Payment Required** instead of immediately serving the requested resource. x402 gives the client a machine-readable payment offer and a way to attach proof of payment to the next request. Here, the offer is for an **exact amount of Cardano's native currency**, expressed in lovelace (1 ADA = 1,000,000 lovelace), on either Cardano preprod or mainnet.
 
-The Compose API receives `BLOCKFROST_PREPROD_PROJECT_ID` and `BLOCKFROST_MAINNET_PROJECT_ID` from `.env` for transaction recovery. The separate `VITE_BLOCKFROST_*` values are baked into the browser build. After changing an API project ID, recreate the API container with `docker compose up -d --force-recreate api`; after changing a `VITE_` ID, rebuild the web image. The gateway-only Compose file runs no API and needs neither Blockfrost ID.
+The purchase is tied to a real order. The storefront shows a live protocol trace so you can follow the offer, wallet signature, submission, confirmation, and any recovery checks.
 
-No public printer port is mapped or opened by the gateway process. Printer readiness is an operator concern; the storefront only shows whether orders are open or paused. **A printer or gateway outage does not block checkout or payment**: paid orders wait in the database until the operator recovers the printer. The operator can pause sales manually in `/admin`. The live protocol trace shows timestamped payment events, offer checks, wallet signing, HTTP responses and settlement details. Check `docker compose logs gateway` and the batch files in `prints/` when it shows **Printer not ready**. The Compose migration job applies all idempotent SQL files in order on each start, including upgrades of an existing local volume.
-
-If the gateway reports `ECONNREFUSED ...:8787`, check `docker compose ps` and `docker compose logs --tail=100 api migrate`. This is the gateway-to-API connection, separate from the U1. Compose waits for `/api/health` before starting the gateway. A later connection failure means the API became unavailable and requires inspection of its logs.
+## How payment works here
 
 ```mermaid
-flowchart TD
-  B["Browser + CIP-30 wallet"] --> A["Public x402 API"]
-  A --> F["Hosted facilitator"]
-  A --> N["Neon PostgreSQL"]
-  G["Home gateway"] -->|"outbound poll + heartbeat"| A
-  G -->|"LAN"| U["Snapmaker U1"]
+sequenceDiagram
+    participant Buyer as Browser + wallet
+    participant API as x402 API
+    participant F as Facilitator
+    participant C as Cardano
+    Buyer->>API: Request payment for an order
+    API-->>Buyer: HTTP 402 + PAYMENT-REQUIRED
+    Buyer->>Buyer: Check network, address, asset and amount; sign
+    Buyer->>API: Retry with PAYMENT-SIGNATURE
+    API->>F: Verify and settle signed payment
+    F->>C: Submit and confirm transaction
+    F-->>API: Settlement result
+    API-->>Buyer: PAYMENT-RESPONSE + paid order
 ```
 
-The gateway never receives shipping details. The browser never contacts Moonraker or your home IP. A signed payment is reserved against one order before the facilitator can submit it; interrupted requests retry the same signed transaction, while the operator can inspect the payment attempt. Batch creation and confirmation are serialized under a Postgres row lock. The gateway claims a queued batch atomically and journals it before upload/start to avoid accidental duplicate launches. An ambiguous start is never retried automatically.
+1. **Create an order.** The API saves the product, price, network and delivery details. The order starts as awaiting payment.
+2. **Receive the offer.** The first payment request has no signature. The API responds with HTTP 402 and the x402 payment requirements. The browser checks the offered network, receiving address, asset and exact amount against the order.
+3. **Sign in the wallet.** A CIP-30 Cardano wallet signs one transaction. The server never receives the wallet's private keys. The browser sends the signed payment in the `PAYMENT-SIGNATURE` header.
+4. **Settle and record.** The API uses the official `@x402/cardano` exact scheme and an x402 facilitator to verify and settle the payment. It checks the settlement receipt against the signed transaction and network before recording the order as paid. The response includes `PAYMENT-RESPONSE`.
+5. **Print after payment.** A private gateway on the printer's network polls for paid work. The operator checks that the print plate is empty and starts the next supported G-code batch in the admin dashboard. After printing, the operator ships the orders and marks them as sent.
 
-The production review and remaining launch checks are in [production review](docs/PRODUCTION_REVIEW.md). Compose serves a compiled frontend through Nginx. For the hosted deployment, one Cloudflare Worker serves both the API and built web assets; Neon stores orders, and the home gateway polls outbound.
+Cardano confirmation can take longer than one HTTP request. The same signed transaction is retained and checked again; an uncertain response is **not** a reason to sign or pay a second time. Customers can later look up their transaction hash without reconnecting a wallet. The API can verify a stored payment against Cardano through Blockfrost when the facilitator has not yet confirmed it. [Payment recovery details](docs/PAYMENT_RECOVERY.md).
 
-See [deployment](docs/DEPLOYMENT.md), [gateway deployment](docs/GATEWAY_DEPLOYMENT.md), [operations](docs/OPERATIONS.md), [architecture](docs/ARCHITECTURE.md), [security](docs/SECURITY.md), [contributing](CONTRIBUTING.md) and the [open-source release checklist](docs/OPEN_SOURCE_CHECKLIST.md). The repository contains an [MIT license](LICENSE); before publishing it, resolve the upstream licensing issue identified in the release checklist. The Cardano signing/payment flow is adapted from the [Cardano Foundation x402 demo](https://github.com/cardano-foundation/x402-cardano-demo) with attribution in source.
+The printer may be offline while orders are accepted and settled. Paid orders wait in the database; the operator resumes printing from the dashboard when the printer returns. No new plate starts automatically after a completed batch. [Gateway and print operations](docs/GATEWAY_DEPLOYMENT.md).
+
+## Try it locally
+
+You need Docker Compose, a Cardano wallet on the chosen network, a compatible hosted x402 facilitator, a matching seller address, Blockfrost project ID, and a printer reachable through Moonraker. This is a real payment flow; the repository does not provide a fake facilitator or printer.
+
+1. Copy `.env.local.example` to `.env` and fill in the values for **one network**. Use different random 64-character hexadecimal values for `ADMIN_TOKEN` and `GATEWAY_TOKEN` (`openssl rand -hex 32`). For local HTTP, set `FRONTEND_ORIGIN=http://localhost:5173` and `ADMIN_ALLOW_INSECURE_LOCALHOST=true`.
+2. Add printer-tested files such as `prints/proof-token-1.gcode` and `prints/proof-token-4.gcode`. The number is the quantity on that plate; include a one-object file.
+3. Run `docker compose up -d --build`. Open [the storefront](http://localhost:5173) and [the admin dashboard](http://localhost:5173/admin). The API is at `http://localhost:8787`.
+
+The full Compose setup runs Postgres, migrations, API, web app and printer gateway. For a hosted setup, deploy the web app and API to Cloudflare, use Neon for Postgres, and run only the outbound gateway near the printer. Follow the [hosted deployment guide](docs/DEPLOYMENT.md) and [gateway-only Compose guide](docs/GATEWAY_DEPLOYMENT.md). The gateway does not need a public inbound port.
+
+## Repository guide
+
+| Path | What it does |
+| --- | --- |
+| `apps/web` | Storefront, wallet flow, protocol trace and admin dashboard |
+| `apps/api` | x402 payment endpoint, orders, settlement and recovery |
+| `apps/gateway` | Private connection to Moonraker and supervised print queue |
+| `db` | PostgreSQL schema and migrations |
+| `model`, `prints` | Token model and operator-provided G-code batches |
+
+For implementation and operating details, see [architecture](docs/ARCHITECTURE.md), [operations](docs/OPERATIONS.md), [security](docs/SECURITY.md), [production review](docs/PRODUCTION_REVIEW.md), and [contributing](CONTRIBUTING.md).
+
+The browser signing flow is adapted from the [Cardano Foundation x402 demo](https://github.com/cardano-foundation/x402-cardano-demo). Review the [open-source release checklist](docs/OPEN_SOURCE_CHECKLIST.md) for the upstream licensing issue before redistributing that adapted code.
