@@ -62,6 +62,10 @@ Configure an access policy with MFA for `/admin` and `/api/admin/*`, without put
 
 Follow [the standalone gateway guide](GATEWAY_DEPLOYMENT.md) and copy `.env.gateway.example` to a private `.env.gateway`. `API_URL` is this Worker's origin; `GATEWAY_TOKEN` must match the Worker secret exactly. The gateway sends outbound requests only. The operator physically checks the plate and authorizes each next batch in `/admin`. Paid orders remain in Neon if the printer or gateway is offline.
 
+## Shipping destinations and pricing
+
+Checkout accepts a free-text country or territory and international postal codes. The database country column is already text, so this change needs no new migration. The displayed ADA price currently includes shipping for every destination; there is no country-specific shipping calculation or destination restriction. Set `PRICE_LOVELACE` with worldwide fulfillment costs in mind before taking mainnet orders, and verify that you can deliver to each destination you intend to serve. The admin delivery address shows the submitted country.
+
 ## 4. Verify before taking sales
 
 1. Confirm `GET /api/health` shows configured payment settings and `GET /api/ready` reaches Neon. Neither proves a successful on-chain payment. Check gateway heartbeat and supported G-code sizes in admin.
