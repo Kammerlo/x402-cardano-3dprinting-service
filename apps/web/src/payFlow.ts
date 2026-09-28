@@ -284,11 +284,13 @@ export async function sendPayment(
   ).txHash;
   let chainStatus: string | null = null;
   let paymentError: string | undefined;
+  let receiptTransaction: string | undefined;
+  let receiptNetwork: string | undefined;
   const unknown = (message: string): FlowOutcome => {
     onStep({
       id: "unknown",
       title: "Payment outcome needs another check",
-      detail: { message, transaction, ...(chainStatus ? { chainStatus } : {}), ...(paymentError ? { paymentError } : {}) },
+      detail: { message, transaction, ...(chainStatus ? { chainStatus } : {}), ...(paymentError ? { paymentError } : {}), ...(receiptTransaction ? { receiptTransaction } : {}), ...(receiptNetwork ? { receiptNetwork } : {}) },
     });
     return { status: "unknown", transaction, message };
   };
@@ -327,18 +329,26 @@ export async function sendPayment(
   } catch {
     return unknown("The server returned an unreadable receipt.");
   }
-  // A receipt is only meaningful if it is well formed and describes the
-  // transaction this browser signed. Anything else is kept as unknown.
+  // A successful receipt must match the exact signed transaction and network.
+  // Failure receipts may omit the hash; that is not evidence of a different
+  // payment and must not hide a useful facilitator error reason.
   if (receiptHeader && typeof receipt?.success !== "boolean") {
     return unknown("The server returned an invalid receipt.");
   }
-  if (
-    receipt &&
-    (receipt.transaction !== transaction ||
-      receipt.network !== payment.payload.accepted.network)
-  ) {
-    return unknown("The receipt does not match this payment.");
-  }
+  if (receipt?.errorReason && /^[a-z0-9_]{1,80}$/.test(receipt.errorReason))
+    paymentError = receipt.errorReason;
+  if (receipt?.transaction && /^[0-9a-f]{64}$/i.test(receipt.transaction))
+    receiptTransaction = receipt.transaction;
+  if (receipt?.network && /^cardano:(mainnet|preprod)$/.test(receipt.network))
+    receiptNetwork = receipt.network;
+  const receiptMatches = receipt?.transaction === transaction &&
+    receipt?.network === payment.payload.accepted.network;
+  if (receipt?.success && !receiptMatches)
+    return unknown("The successful settlement receipt does not match the signed transaction or network. Keep this payment for operator review.");
+  if (receipt && !receipt.success &&
+      ((receipt.transaction && receipt.transaction !== transaction) ||
+       (receipt.network && receipt.network !== payment.payload.accepted.network)))
+    return unknown("The facilitator's failure receipt refers to a different transaction or network. Keep this payment for operator review.");
 
   if (response.ok && !receiptHeader) {
     try {
@@ -419,9 +429,10 @@ export async function sendPayment(
     return { status: "settled", body, receipt };
   }
   if (
-    receipt?.errorReason === "exact_cardano_settlement_definitively_rejected" ||
-    (receipt?.errorReason === "exact_cardano_settlement_failed" &&
-      receipt.extra?.status === "expired")
+    receiptMatches &&
+    (receipt?.errorReason === "exact_cardano_settlement_definitively_rejected" ||
+      (receipt?.errorReason === "exact_cardano_settlement_failed" &&
+        receipt.extra?.status === "expired"))
   ) {
     onStep({
       id: "failed",
@@ -433,8 +444,6 @@ export async function sendPayment(
       message: `Payment did not settle (${receipt.errorReason}). You can start a new order and try again.`,
     };
   }
-  if (receipt?.errorReason && /^[a-z0-9_]{1,80}$/.test(receipt.errorReason))
-    paymentError = receipt.errorReason;
   const chainMessage: Record<string, string> = {
     CONFIRMING: "The chain provider found the transaction, but it needs more confirmations.",
     NOT_FOUND: "The chain provider has not found this transaction yet.",
