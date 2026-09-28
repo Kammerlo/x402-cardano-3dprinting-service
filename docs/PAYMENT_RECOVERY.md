@@ -10,11 +10,12 @@ Customers can save the transaction hash and use Check payment in the storefront 
 2. Add the matching **runtime Secret** to the Cloudflare Worker:
    - `BLOCKFROST_PREPROD_PROJECT_ID` for preprod.
    - `BLOCKFROST_MAINNET_PROJECT_ID` for mainnet.
-3. Deploy the Worker. These runtime secrets are separate from the frontend's `VITE_BLOCKFROST_*` build variables.
+3. Run `db/010_chain_check_evidence.sql` on Neon before deploying this diagnostic update. It keeps the last chain result while the 15-second check interval is active. It is additive and safe to run again.
+4. Deploy the Worker. These runtime secrets are separate from the frontend's `VITE_BLOCKFROST_*` build variables.
 
 The normal signed-payment retry and the public hash lookup both check transactions already associated with an order when the facilitator cannot confirm them. A confirmed on-chain payment is recorded and returned as paid without a new wallet signature. It uses the order's network and verifies the stored signed hash, payment terms, successful execution, receiving address, lovelace amount and canonical confirmation depth through Blockfrost. It honors the signed x402 confirmation policy, with a minimum of one newer block. Matching payments are atomically marked PAID with a CHAIN_SETTLEMENT event and become eligible for supervised printing. It never submits transactions. Script/escrow payments are not automatically reconciled by this direct-payment verifier.
 
-Known pending hashes are limited to one provider check per 15 seconds across Worker instances. Missing credentials, provider outages, rate limits and 404s never mark an order paid or discard it. Hash lookups return only transaction, network, payment/fulfillment status and chain-check result—no customer information or order access secrets. A recorded payment is not continuously rechecked for later chain rollbacks.
+Known pending hashes are limited to one provider check per 15 seconds across Worker instances. Concurrent payment retries and hash lookups now show the last recorded chain result and its timestamp rather than only "check again"; the payment protocol trace also reports the safe chain status alongside the facilitator's HTTP status. A cached result is evidence from its displayed check time, not a prediction of what the chain will show next. Missing credentials, provider outages, rate limits and 404s never mark an order paid or discard it. Hash lookups return only transaction, network, payment/fulfillment status and chain-check result—no customer information or order access secrets. A recorded payment is not continuously rechecked for later chain rollbacks.
 
 ## Offer and admin check troubleshooting
 

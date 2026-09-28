@@ -17,12 +17,14 @@ import {
   error,
 } from "./domain";
 
+type RecoveryResult = { response: Response | null; chainStatus: string };
+
 async function recoverOnChain(
   env: Env,
   order: Order,
   id: string,
   signedHash: string,
-): Promise<Response | null> {
+): Promise<RecoveryResult> {
   try {
     const chain = await reconcileRecordedPayment(env, order, signedHash);
     if (chain.status === "CONFIRMED") {
@@ -31,16 +33,26 @@ async function recoverOnChain(
       );
       if (current?.tx_hash?.toLowerCase() === signedHash.toLowerCase()) {
         // Never carry an earlier 402 error receipt into a successful recovery.
-        return new Response(
-          JSON.stringify({ id, status: current.status, transaction: signedHash }),
-          { headers: { "content-type": "application/json", "cache-control": "no-store" } },
-        );
+        return {
+          chainStatus: chain.status,
+          response: new Response(
+            JSON.stringify({ id, status: current.status, transaction: signedHash }),
+            { headers: { "content-type": "application/json", "cache-control": "no-store" } },
+          ),
+        };
       }
     }
+    return { response: null, chainStatus: chain.status };
   } catch (cause) {
     console.error("on-chain payment reconciliation failed", id, cause);
+    return { response: null, chainStatus: "UNAVAILABLE" };
   }
-  return null;
+}
+
+function withChainStatus(response: Response, status: string): Response {
+  const headers = new Headers(response.headers);
+  headers.set("X-Payment-Chain-Status", status);
+  return new Response(response.body, { status: response.status, headers });
 }
 
 export async function processPayment(
@@ -110,11 +122,11 @@ export async function processPayment(
     if (!claimed.length) {
       // Another request may be waiting on the facilitator after broadcast.
       // Reconcile independently if the signed transaction is already final.
-      const recovered = await recoverOnChain(env, o, id, signedHash);
-      if (recovered) { c.res = recovered; return c.res; }
-      return error(
-        "Payment reconciliation is already running; retry the same payment shortly",
-        409,
+      const recovery = await recoverOnChain(env, o, id, signedHash);
+      if (recovery.response) { c.res = recovery.response; return c.res; }
+      return withChainStatus(
+        error("Payment reconciliation is already running; retry the same payment shortly", 409),
+        recovery.chainStatus,
       );
     }
     cachedReceipt = claimed[0].receipt;
@@ -169,8 +181,9 @@ export async function processPayment(
         // transaction but has not observed enough confirmations yet. Check the
         // stored transaction against the chain before asking the browser to wait.
         if (signedHash) {
-          const recovered = await recoverOnChain(env, o, id, signedHash);
-          if (recovered) { c.res = recovered; return c.res; }
+          const recovery = await recoverOnChain(env, o, id, signedHash);
+          if (recovery.response) { c.res = recovery.response; return c.res; }
+          c.res = withChainStatus(c.res, recovery.chainStatus);
         }
         return c.res;
       }

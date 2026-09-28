@@ -44,6 +44,15 @@ test('browser distinguishes rejected payments from uncertain settlement', async 
         assert.deepEqual(removed, ['failed', 'settled'].includes(expected) ? ['print-prepared'] : []);
       });
     }
+    await t.test('a provider configuration problem is visible without losing the signed payment', async () => {
+      globalThis.fetch = async () => Response.json({}, { status: 402, headers: { 'X-Payment-Chain-Status': 'NOT_CONFIGURED' } });
+      const steps = [];
+      const result = await sendPayment(payment, step => steps.push(step), true);
+      assert.equal(result.status, 'unknown');
+      assert.match(result.message, /no Blockfrost project ID/);
+      assert.equal(steps.find(step => step.id === 'response').detail.chainStatus, 'NOT_CONFIGURED');
+      assert.equal(steps.find(step => step.id === 'unknown').detail.chainStatus, 'NOT_CONFIGURED');
+    });
     await t.test('connection loss keeps original payment recoverable', async () => {
       globalThis.fetch = async () => { throw new Error('connection lost'); };
       assert.equal((await sendPayment(payment, () => {}, false)).status, 'unknown');

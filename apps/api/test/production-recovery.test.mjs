@@ -316,6 +316,19 @@ test(
         if (path.endsWith("/blocks/latest")) return Response.json({ height: 120 });
         throw new Error(`Unexpected fetch: ${path}`);
       };
+      // The public lookup must show the previous chain result even when a
+      // concurrent payment retry owns the 15-second provider-check window.
+      const providerKey = env.BLOCKFROST_PREPROD_PROJECT_ID;
+      delete env.BLOCKFROST_PREPROD_PROJECT_ID;
+      const pendingWithoutProvider = await pay();
+      assert.equal(pendingWithoutProvider.status, 402);
+      assert.equal(pendingWithoutProvider.headers.get("X-Payment-Chain-Status"), "NOT_CONFIGURED");
+      const cachedChainCheck = await (await req(`/api/transactions/${hash}`)).json();
+      assert.equal(cachedChainCheck.chain.status, "NOT_CONFIGURED");
+      assert.ok(cachedChainCheck.chain.checkedAt);
+      assert.equal(cachedChainCheck.paymentStatus, "UNCONFIRMED");
+      env.BLOCKFROST_PREPROD_PROJECT_ID = providerKey;
+      await db.query("UPDATE payment_attempts SET chain_check_after=NULL WHERE order_id=$1", [order.id]);
       const directEvidence = await verifyOnChain(env, { id: order.id, network: env.CARDANO_NETWORK, price_lovelace: "5000000", signed_payload: signature, tx_hash: hash });
       assert.equal(directEvidence.status, "CONFIRMED", JSON.stringify(directEvidence));
       const recoveredFromPay = await pay();

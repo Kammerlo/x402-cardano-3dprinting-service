@@ -65,7 +65,7 @@ export default function App() {
   const [lookupHash, setLookupHash] = useState("");
   const [lookupBusy, setLookupBusy] = useState(false);
   const [lookupMessage, setLookupMessage] = useState("");
-  const [lookupResult, setLookupResult] = useState<{ transaction: string; network: CardanoNetwork; paymentStatus: string; orderStatus: string; chain?: { status: string; confirmations?: number; requiredConfirmations?: number } } | null>(null);
+  const [lookupResult, setLookupResult] = useState<{ transaction: string; network: CardanoNetwork; paymentStatus: string; orderStatus: string; chain?: { status: string; confirmations?: number; requiredConfirmations?: number; checkedAt?: string } } | null>(null);
   const lookupTransaction = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLookupBusy(true);
@@ -872,6 +872,7 @@ export default function App() {
                     <div><dt>Blockchain check</dt><dd>{({ CONFIRMED: "Verified on-chain", CONFIRMING: "On-chain, awaiting more confirmations", NOT_FOUND: "Not visible to the provider yet", MISMATCH: "Needs operator review", UNAVAILABLE: "Provider temporarily unavailable", NOT_CONFIGURED: "Automatic checks are not configured yet", CHECK_AGAIN: "Recently checked. Try again in 15 seconds", RECORDED: "Payment already recorded" } as Record<string, string>)[lookupResult.chain?.status || ""] || "Pending"}</dd></div>
                     {lookupResult.chain?.confirmations !== undefined && <div><dt>Confirmations</dt><dd>{lookupResult.chain.confirmations} / {lookupResult.chain.requiredConfirmations}</dd></div>}
                   </dl>
+                  {lookupResult.chain?.checkedAt && <p className="lookup-checked-at">Last checked: {new Date(lookupResult.chain.checkedAt).toLocaleString()}</p>}
                   <a className="checkout-link" href={txUrl(lookupResult.transaction, lookupResult.network)} target="_blank" rel="noreferrer">View on explorer <ExternalLink size={15} /></a>
                   <p className="lookup-guidance">You can check this hash again later. If confirmation is pending, keep the original payment and do not pay again.</p>
                 </div>}

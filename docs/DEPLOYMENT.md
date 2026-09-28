@@ -12,7 +12,7 @@ The facilitator must implement `/supported`, `/verify` and `/settle`. Check `/su
 
 ## 1. Apply Neon migrations
 
-Back up an existing production database first. From the repository root, use a Neon connection string with SSL. Apply every SQL file in numeric order, **001 through 009**. For example:
+Back up an existing production database first. From the repository root, use a Neon connection string with SSL. Apply every SQL file in numeric order, **001 through 010**. For example:
 
 ```bash
 export DATABASE_URL='postgresql://USER:PASSWORD@HOST/neondb?sslmode=require'
@@ -22,7 +22,7 @@ done
 unset DATABASE_URL
 ```
 
-Install `psql` locally, or run each file in Neon's SQL editor in the same order. Existing installations should apply only unapplied migrations and verify their backups before upgrading. Migration 009 adds chain payment checks. Apply migrations before deploying a newer API. Do not share the connection string or paste it in a shell command that will be committed.
+Install `psql` locally, or run each file in Neon's SQL editor in the same order. Existing installations should apply only unapplied migrations and verify their backups before upgrading. Migrations 009 and 010 add chain payment checks and the last-check diagnostic cache. Apply migrations before deploying a newer API. Do not share the connection string or paste it in a shell command that will be committed.
 
 ## 2. Build and deploy the Worker
 

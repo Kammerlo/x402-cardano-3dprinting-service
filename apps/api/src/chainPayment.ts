@@ -4,7 +4,7 @@ import type { Env } from "./domain";
 import { query } from "./db";
 
 export type ChainOrder = { id: string; network: string; price_lovelace: string; signed_payload: string; tx_hash: string };
-export type ChainEvidence = { status: "CONFIRMED" | "CONFIRMING" | "NOT_FOUND" | "MISMATCH" | "UNAVAILABLE" | "NOT_CONFIGURED"; confirmations?: number; requiredConfirmations?: number };
+export type ChainEvidence = { status: "CONFIRMED" | "CONFIRMING" | "NOT_FOUND" | "MISMATCH" | "UNAVAILABLE" | "NOT_CONFIGURED"; confirmations?: number; requiredConfirmations?: number; checkedAt?: string };
 
 // Check trusted structured chain data, never HTML/explorer availability.
 export async function verifyOnChain(env: Env, order: ChainOrder): Promise<ChainEvidence> {
@@ -71,8 +71,36 @@ export async function reconcileRecordedPayment(
      RETURNING signed_payload`,
     [order.id, hash],
   );
-  if (!attempt) return { status: "CHECK_AGAIN" };
+  if (!attempt) {
+    const [cached] = await query<{
+      chain_status: ChainEvidence["status"] | null;
+      chain_confirmations: number | null;
+      chain_required_confirmations: number | null;
+      chain_checked_at: string | null;
+    }>(
+      env,
+      "SELECT chain_status,chain_confirmations,chain_required_confirmations,chain_checked_at FROM payment_attempts WHERE order_id=$1 AND tx_hash=$2",
+      [order.id, hash],
+    );
+    if (cached?.chain_status && cached.chain_checked_at) {
+      return {
+        status: cached.chain_status,
+        checkedAt: cached.chain_checked_at,
+        ...(cached.chain_confirmations !== null ? { confirmations: cached.chain_confirmations } : {}),
+        ...(cached.chain_required_confirmations !== null ? { requiredConfirmations: cached.chain_required_confirmations } : {}),
+      };
+    }
+    return { status: "CHECK_AGAIN" };
+  }
   const chain = await verifyOnChain(env, { ...order, tx_hash: hash, signed_payload: attempt.signed_payload });
+  const [recorded] = await query<{ chain_checked_at: string }>(
+    env,
+    `UPDATE payment_attempts
+     SET chain_status=$3,chain_confirmations=$4,chain_required_confirmations=$5,chain_checked_at=now()
+     WHERE order_id=$1 AND tx_hash=$2 RETURNING chain_checked_at`,
+    [order.id, hash, chain.status, chain.confirmations ?? null, chain.requiredConfirmations ?? null],
+  );
+  chain.checkedAt = recorded?.chain_checked_at;
   if (chain.status === "CONFIRMED") {
     await query(
       env,
