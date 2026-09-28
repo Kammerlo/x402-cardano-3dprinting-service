@@ -24,3 +24,51 @@
 .admin-simple h1{font-size:64px}.admin-simple h2{font-size:28px;letter-spacing:-.035em;margin:8px 0 20px}.desk-toolbar,.desk-section-title,.desk-plate-title,.desk-pagination{display:flex;align-items:center;gap:15px;justify-content:space-between;flex-wrap:wrap}.admin-simple button{display:inline-flex;gap:8px;align-items:center;border:1px solid #b8c7dc;border-radius:8px;padding:12px 16px;background:#fff;color:#23439f}.admin-simple button.primary{background:#234aca;color:#fff;border-color:#234aca}.admin-simple button:disabled{opacity:.45;cursor:not-allowed}.desk-toolbar{justify-content:flex-end}.desk-login{max-width:430px;margin:40px auto;padding:32px;background:white;border:1px solid #ccd6e5;border-radius:16px}.desk-login label,.desk-search{display:grid;gap:8px;margin:18px 0}.desk-login input,.desk-search input{border:1px solid #b9c8de;border-radius:7px;padding:13px;font:inherit;width:100%}.desk-login p,.desk-hint{color:#596a82;font-size:14px;line-height:1.6}.desk-login .primary{width:100%;justify-content:center}.desk-plate{background:#fff;border:1px solid #c9d8ec;border-top:4px solid #2952cb;border-radius:14px;padding:28px;margin:30px 0}.desk-plate-title{justify-content:flex-start}.desk-plate-title>svg{color:#2850c2;flex-shrink:0}.desk-plate-title h2{margin-bottom:8px}.desk-chip{margin-left:auto;border-radius:20px;padding:8px 12px;background:#fff0d7;color:#755015;font-size:13px}.desk-chip.is-ready{background:#e2f5e8;color:#216740}.desk-plate>small{display:block;margin-top:22px;color:#64758c;line-height:1.6}.plate-orders{list-style:none;padding:0;margin:20px 0;border-block:1px solid #e0e5ef}.plate-orders li{padding:13px 0;display:flex;justify-content:space-between;gap:15px;flex-wrap:wrap}.plate-orders small{display:block;margin-top:5px;color:#596b80}.plate-next{margin-top:24px}.plate-confirm{display:flex;align-items:flex-start;gap:10px;margin:20px 0;line-height:1.5}.plate-confirm input{width:20px;height:20px;flex-shrink:0;accent-color:#234aca}.desk-notice{padding:17px;border:1px solid #9fd0b5;border-radius:9px;background:#eaf8ef;color:#215b3f}.desk-section-title h2{display:flex;gap:12px;align-items:center}.desk-tabs{display:flex;gap:8px;flex-wrap:wrap}.desk-tabs button.selected{background:#203eae;color:#fff;border-color:#203eae}.desk-tabs b{font-size:12px;opacity:.85}.desk-search{max-width:520px;font-size:13px}.desk-order-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,290px),1fr));gap:16px}.desk-order{background:#fff;border:1px solid #d1dbea;border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:15px;min-width:0}.desk-order header{display:flex;align-items:center;gap:12px;justify-content:space-between;font-size:12px}.desk-order>.primary{justify-content:center}.desk-order>small{color:#61748b}.desk-order .status{font-size:10px;line-height:1.5}.desk-order summary,.desk-settings summary{cursor:pointer;color:#24499f;line-height:1.6}.desk-order .delivery-address{margin-top:15px;overflow-wrap:anywhere}.order-recovery{margin-top:auto}.order-recovery button,.order-recovery a{display:block;margin-top:12px;font-size:13px}.order-recovery code{display:block;overflow-wrap:anywhere;margin-top:10px;font-size:11px}.desk-pagination{justify-content:center;margin:25px 0}.desk-settings{border-top:1px solid #cbd5e5;padding:25px 0;margin-top:30px}.desk-settings>button{margin:20px 12px 10px 0}.desk-settings p{font-size:13px;color:#5c6d84}.desk-empty{padding:30px;color:#62748a}.admin-simple input:focus-visible,.admin-simple button:focus-visible,.admin-simple summary:focus-visible{outline:3px solid #7399ff;outline-offset:3px}@media(max-width:700px){.admin-simple h1{font-size:48px}.desk-plate{padding:20px}.desk-chip{margin-left:0}.plate-next .primary{width:100%;justify-content:center}.desk-tabs button{padding:10px 12px}.desk-order-grid{grid-template-columns:1fr}}
 
 .testnet-warning{margin:20px 0 2px;padding:20px 22px;background:#fff0dc;border:2px solid #e79246;border-left:6px solid #c34e20;color:#5d2a15;box-shadow:0 5px 18px #b6491715}.testnet-warning span{display:block;font:700 11px "DM Mono",monospace;letter-spacing:.08em;color:#ab3e16;margin-bottom:9px}.testnet-warning strong{display:block;font:700 clamp(16px,1.6vw,20px)/1.3 "Space Grotesk",sans-serif}.testnet-warning p{font-size:13px;line-height:1.55;margin:8px 0 0;color:#703c24}
+
+/* Checkout controls and payment recovery */
+.checkout-section .checkout-secondary,.transaction-lookup .checkout-secondary{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:42px;padding:11px 15px;border:1px solid #b5c6e3;border-radius:8px;background:#fff;color:#21439e;font:600 12px/1.35 'DM Sans',sans-serif;text-decoration:none;box-shadow:0 2px 7px #1b39800a}
+.checkout-section .checkout-secondary:hover,.transaction-lookup .checkout-secondary:hover{background:#ecf2ff;border-color:#6f92d8;color:#163581}
+.checkout-section .checkout-secondary:disabled{opacity:.5;cursor:not-allowed}
+.checkout-section .primary,.transaction-lookup .primary{border-radius:8px;min-height:52px;line-height:1.4}
+.checkout-section button:focus-visible,.checkout-section a:focus-visible,.transaction-lookup button:focus-visible,.transaction-lookup a:focus-visible,.transaction-lookup input:focus-visible{outline:3px solid #779cff;outline-offset:3px}
+.checkout-section .order-form{gap:18px}
+.checkout-section .order-form label{line-height:1.45}
+.checkout-section .fineprint,.checkout-section .form-disclaimer{font-size:12px;line-height:1.65}
+.checkout-section .order-state{padding-bottom:12px}
+.checkout-section .state-header{align-items:center}
+.payment-status-card{display:grid;gap:7px;margin:24px 0;padding:18px 20px;background:#ecf2ff;border:1px solid #d1dff6;border-radius:10px;overflow-wrap:anywhere}
+.payment-status-card span{color:#5a6b84;font:600 11px 'DM Mono',monospace;letter-spacing:.04em;text-transform:uppercase}
+.payment-status-card strong{color:#1e3c9a;font:600 21px/1.25 'Space Grotesk',sans-serif;text-transform:capitalize}
+.payment-status-card small{color:#5e718a;font:11px/1.5 'DM Mono',monospace}
+.payment-hash-card{margin:20px 0;padding:18px 20px;border:1px solid #c9d5ea;background:#fff;border-radius:10px;min-width:0}
+.payment-hash-card strong{display:block;margin-bottom:10px;color:#1d315f;font-size:14px}
+.payment-hash-card code{display:block;padding:12px;border-radius:6px;background:#edf2fa;color:#1b397c;font:12px/1.6 'DM Mono',monospace;overflow-wrap:anywhere;user-select:all}
+.payment-hash-card p,.payment-recovery-note p{margin:11px 0;color:#52647d;font-size:13px;line-height:1.6}
+.checkout-action-row{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-top:16px}
+.checkout-link{display:inline-flex;align-items:center;gap:7px;min-height:42px;color:#2347aa;font-size:13px;font-weight:700;text-decoration:underline;text-underline-offset:3px}
+.checkout-link:hover{color:#173583}
+.payment-explorer-link{margin:4px 0 8px}
+.checkout-section .wallet-connect{padding:17px;background:#f4f7fd;border:1px solid #d5e0f2;border-radius:10px}
+.checkout-section .wallet-connect label{min-width:0}
+.checkout-section .wallet-connect small{font-size:12px;line-height:1.5}
+.payment-recovery-note{margin-top:18px;padding:16px 18px;border:1px solid #e8d1a2;border-left:4px solid #c5862c;border-radius:8px;background:#fff8e9}
+.payment-recovery-note strong{color:#704b13;font-size:14px}
+.payment-recovery-note p{color:#645235;margin-bottom:0}
+.checkout-section .checkout-new-order{margin-top:18px}
+.checkout-message{margin-top:18px;padding:15px 17px;background:#f1f5ff;border:1px solid #c7d5f2;border-left:4px solid #3159c7;border-radius:8px;color:#284070;font-size:13px;line-height:1.55;overflow-wrap:anywhere}
+.checkout-section .availability-note{border-radius:8px;font-size:13px;line-height:1.6}
+.checkout-section .availability-note .checkout-secondary{margin:8px 8px 0 0}
+.transaction-lookup{padding-block:80px 95px}
+.lookup-panel{max-width:880px;margin:auto;padding:clamp(24px,4vw,48px);background:#fff;border:1px solid #cbd5e8;border-radius:16px;box-shadow:0 14px 48px #233c7812}
+.lookup-heading h2{margin:13px 0 14px;font-size:clamp(36px,4.4vw,58px);line-height:1.08}
+.lookup-heading p{max-width:640px;color:#617087;font-size:15px;line-height:1.65}
+.lookup-form{grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:12px;margin-top:28px}
+.lookup-form label{min-width:0}
+.lookup-form .primary{white-space:nowrap}
+.lookup-result{margin-top:25px;padding:22px;border:1px solid #c6d5ed;border-radius:10px;background:#f6f8fd}
+.lookup-facts{margin:13px 0 14px}
+.lookup-facts>div{display:grid;grid-template-columns:150px minmax(0,1fr);gap:10px;padding:12px 0;border-top:1px solid #dce4f2}
+.lookup-facts dt{color:#5b6b83;font-size:12px}
+.lookup-facts dd{margin:0;color:#1b2f60;font-size:13px;font-weight:700;line-height:1.5;overflow-wrap:anywhere}
+.lookup-guidance{margin:18px 0 0;color:#5c6d84;font-size:12px;line-height:1.6}
+@media(max-width:700px){.checkout-section .wallet-connect{display:grid;grid-template-columns:1fr 1fr}.checkout-section .wallet-connect label,.checkout-section .wallet-connect small{grid-column:1/-1}.lookup-form{grid-template-columns:1fr}.lookup-form .primary{width:100%;justify-content:center;white-space:normal}.lookup-facts>div{grid-template-columns:1fr;gap:4px}.transaction-lookup{padding-block:60px 75px}.checkout-action-row{align-items:stretch}.checkout-action-row>*{flex:1 1 auto}}
