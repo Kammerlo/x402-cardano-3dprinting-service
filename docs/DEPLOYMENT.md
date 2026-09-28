@@ -26,17 +26,21 @@ Install `psql` locally, or run each file in Neon's SQL editor in the same order.
 
 ## 2. Build and deploy the Worker
 
-The repository root is the build directory. Run `npm ci`, then supply the network's browser provider ID at **build time**:
+The repository root is the build directory. Vite reads `VITE_BLOCKFROST_*_PROJECT_ID` **while building the frontend** and embeds its value in the public browser bundle. Supply the ID for the storefront network you are building; mainnet does **not** require a preprod frontend ID.
+
+For a **mainnet** storefront, build and deploy from the repository root:
 
 ```bash
 npm ci
-VITE_BLOCKFROST_PREPROD_PROJECT_ID=YOUR_PREPROD_ID npm run build -w @print/web
-npx wrangler login
+VITE_BLOCKFROST_MAINNET_PROJECT_ID=YOUR_MAINNET_ID npm run build -w @print/web
 npx wrangler deploy --config apps/api/wrangler.jsonc
 ```
 
-For mainnet also provide `VITE_BLOCKFROST_MAINNET_PROJECT_ID` at build time. Build again whenever an ID changes. Wrangler's `apps/api/wrangler.jsonc` includes `../web/dist` as the static asset directory and routes `/api/*` to the Worker. Use one origin for the storefront, `/admin` and API. If Cloudflare's Git build UI is used, set the root directory to the **repository root**, install with `npm ci`, build with `npm run build -w @print/web`, and deploy with `npx wrangler deploy --config apps/api/wrangler.jsonc`. Add the `VITE_BLOCKFROST_*` build variable there as appropriate. Do not put admin/gateway/database secrets in build variables or `VITE_*`.
+For **preprod**, replace the variable in that build command with `VITE_BLOCKFROST_PREPROD_PROJECT_ID` and use a preprod project ID. Build again whenever the ID changes. Wrangler's `apps/api/wrangler.jsonc` includes `../web/dist` as the static asset directory and routes `/api/*` to the Worker.
 
+With Cloudflare's Git build integration, open the **specific storefront Worker** → **Settings → Build → Build Variables and Secrets**. Add `VITE_BLOCKFROST_MAINNET_PROJECT_ID` to its **production build** for mainnet (or the preprod name for the preprod Worker). Set the root directory to the repository root, install with `npm ci`, build with `npm run build -w @print/web`, and deploy with `npx wrangler deploy --config apps/api/wrangler.jsonc`. Trigger a **new build and deployment** after adding the variable; editing Worker runtime Variables and Secrets or restarting the Worker cannot change an already built frontend. Check the build history to confirm the new build was deployed. Never put admin, gateway or database secrets in build variables or names beginning with `VITE_`.
+
+The API's runtime `BLOCKFROST_MAINNET_PROJECT_ID` (without `VITE_`) is separate and is used for on-chain recovery. Configure it in the same Worker's **Settings → Variables and Secrets**. If you have unresolved orders on both networks in one database, configure both runtime IDs there.
 In Cloudflare Workers & Pages → your Worker → Settings → Variables and Secrets, set:
 
 | Name | Kind | Value |
