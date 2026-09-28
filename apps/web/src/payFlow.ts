@@ -282,11 +282,13 @@ export async function sendPayment(
   const transaction = decodeCardanoTransaction(
     String(payment.payload.payload.transaction),
   ).txHash;
+  let chainStatus: string | null = null;
+  let paymentError: string | undefined;
   const unknown = (message: string): FlowOutcome => {
     onStep({
       id: "unknown",
       title: "Payment outcome needs another check",
-      detail: { message, transaction },
+      detail: { message, transaction, ...(chainStatus ? { chainStatus } : {}), ...(paymentError ? { paymentError } : {}) },
     });
     return { status: "unknown", transaction, message };
   };
@@ -304,12 +306,16 @@ export async function sendPayment(
     );
   }
 
+  const reportedChainStatus = response.headers.get("X-Payment-Chain-Status");
+  chainStatus = reportedChainStatus && /^(CONFIRMED|CONFIRMING|NOT_FOUND|MISMATCH|UNAVAILABLE|NOT_CONFIGURED|CHECK_AGAIN)$/.test(reportedChainStatus)
+    ? reportedChainStatus : null;
   onStep({
     id: "response",
     title: `Payment endpoint replied HTTP ${response.status}`,
     detail: {
       status: response.status,
       receiptPresent: response.headers.has("PAYMENT-RESPONSE"),
+      ...(chainStatus ? { chainStatus } : {}),
     },
   });
   const receiptHeader = response.headers.get("PAYMENT-RESPONSE");
@@ -426,6 +432,19 @@ export async function sendPayment(
       status: "failed",
       message: `Payment did not settle (${receipt.errorReason}). You can start a new order and try again.`,
     };
+  }
+  if (receipt?.errorReason && /^[a-z0-9_]{1,80}$/.test(receipt.errorReason))
+    paymentError = receipt.errorReason;
+  const chainMessage: Record<string, string> = {
+    CONFIRMING: "The chain provider found the transaction, but it needs more confirmations.",
+    NOT_FOUND: "The chain provider has not found this transaction yet.",
+    MISMATCH: "The chain check found a mismatch with this order. Ask the operator to review it.",
+    UNAVAILABLE: "The chain provider could not complete the check.",
+    NOT_CONFIGURED: "The API Worker has no Blockfrost project ID for this network.",
+    CHECK_AGAIN: "Another chain check is in progress.",
+  };
+  if (chainStatus && chainMessage[chainStatus]) {
+    return unknown(`${chainMessage[chainStatus]} The facilitator also has not confirmed settlement (HTTP ${response.status}). Keep this original payment; do not sign another transaction.`);
   }
   // Once a transaction has been signed and sent, a bare 402 cannot prove
   // rejection: the facilitator might have broadcast it before timing out.
