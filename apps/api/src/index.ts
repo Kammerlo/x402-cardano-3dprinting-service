@@ -176,7 +176,6 @@ app.post("/api/orders", async (c) => {
     !name ||
     !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ||
     !line1 ||
-    !postal ||
     /[\u0000-\u001f\u007f]/.test(postal) ||
     !city ||
     country.length < 2 ||
