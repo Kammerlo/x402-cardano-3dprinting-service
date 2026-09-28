@@ -8,6 +8,7 @@ import {
 import { decodeCardanoTransaction } from "@x402/cardano";
 import { ExactCardanoScheme } from "@x402/cardano/exact/server";
 import { query } from "./db";
+import { reconcileRecordedPayment } from "./chainPayment";
 import {
   type Env,
   type Order,
@@ -15,6 +16,32 @@ import {
   sellerIsValid,
   error,
 } from "./domain";
+
+async function recoverOnChain(
+  env: Env,
+  order: Order,
+  id: string,
+  signedHash: string,
+): Promise<Response | null> {
+  try {
+    const chain = await reconcileRecordedPayment(env, order, signedHash);
+    if (chain.status === "CONFIRMED") {
+      const [current] = await query<{ status: string; tx_hash: string | null }>(
+        env, "SELECT status,tx_hash FROM orders WHERE id=$1", [id],
+      );
+      if (current?.tx_hash?.toLowerCase() === signedHash.toLowerCase()) {
+        // Never carry an earlier 402 error receipt into a successful recovery.
+        return new Response(
+          JSON.stringify({ id, status: current.status, transaction: signedHash }),
+          { headers: { "content-type": "application/json", "cache-control": "no-store" } },
+        );
+      }
+    }
+  } catch (cause) {
+    console.error("on-chain payment reconciliation failed", id, cause);
+  }
+  return null;
+}
 
 export async function processPayment(
   c: Context<{ Bindings: Env }>,
@@ -80,11 +107,16 @@ export async function processPayment(
       WHERE order_id=$1 AND (lease_until IS NULL OR lease_until<now()) RETURNING receipt`,
       [id, lease],
     );
-    if (!claimed.length)
+    if (!claimed.length) {
+      // Another request may be waiting on the facilitator after broadcast.
+      // Reconcile independently if the signed transaction is already final.
+      const recovered = await recoverOnChain(env, o, id, signedHash);
+      if (recovered) return recovered;
       return error(
         "Payment reconciliation is already running; retry the same payment shortly",
         409,
       );
+    }
     cachedReceipt = claimed[0].receipt;
   }
   try {
@@ -112,7 +144,16 @@ export async function processPayment(
       });
       if (immediate instanceof Response) c.res = immediate;
       cachedReceipt = c.res.headers.get("PAYMENT-RESPONSE");
-      if (!c.res.ok || !cachedReceipt) return c.res;
+      if (!c.res.ok || !cachedReceipt) {
+        // A 402 after signing can mean that the facilitator broadcast the
+        // transaction but has not observed enough confirmations yet. Check the
+        // stored transaction against the chain before asking the browser to wait.
+        if (signedHash) {
+          const recovered = await recoverOnChain(env, o, id, signedHash);
+          if (recovered) return recovered;
+        }
+        return c.res;
+      }
     }
     const receiptHeader = cachedReceipt;
 

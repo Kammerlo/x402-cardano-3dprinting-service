@@ -241,6 +241,36 @@ test(
       assert.equal(chainCalls, 4);
       assert.equal((await db.query("SELECT count(*)::int AS count FROM order_events WHERE order_id=$1 AND kind='CHAIN_SETTLEMENT'", [order.id])).rows[0].count, 1);
 
+      // A facilitator can keep returning 402 even after the signed transaction
+      // reaches the chain. The normal payment retry must recover the order.
+      await db.query("UPDATE orders SET status='AWAITING_PAYMENT',tx_hash=NULL WHERE id=$1", [order.id]);
+      await db.query("UPDATE payment_attempts SET status='RECEIVED',receipt=NULL,chain_check_after=NULL WHERE order_id=$1", [order.id]);
+      let pendingSettlements = 0;
+      globalThis.fetch = async (url) => {
+        const path = String(url);
+        if (path.endsWith("/supported")) return Response.json({
+          kinds: [{ x402Version: 2, scheme: "exact", network: env.CARDANO_NETWORK,
+            extra: { assetTransferMethods: ["default"], l1Confirmations: { minimum: 0, maximum: 20 } } }],
+          extensions: [], signers: {},
+        });
+        if (path.endsWith("/verify")) return Response.json({ isValid: true, payer: env.SELLER_ADDRESS });
+        if (path.endsWith("/settle")) {
+          pendingSettlements++;
+          return Response.json({ success: false, errorReason: "settlement_pending", transaction: hash, network: env.CARDANO_NETWORK });
+        }
+        if (path.endsWith("/utxos")) return Response.json({ hash, outputs: [{ address: env.SELLER_ADDRESS, amount: [{ unit: "lovelace", quantity: "5000000" }] }] });
+        if (path.endsWith(`/txs/${hash}`)) return Response.json({ hash, block: "test-block", block_height: 100, valid_contract: true });
+        if (path.endsWith("/blocks/100")) return Response.json({ hash: "test-block", height: 100 });
+        if (path.endsWith("/blocks/latest")) return Response.json({ height: 120 });
+        throw new Error(`Unexpected fetch: ${path}`);
+      };
+      const recoveredFromPay = await pay();
+      assert.equal(recoveredFromPay.status, 200, await recoveredFromPay.clone().text());
+      assert.equal((await recoveredFromPay.json()).transaction, hash);
+      assert.ok(pendingSettlements >= 1);
+      assert.equal((await db.query("SELECT status FROM orders WHERE id=$1", [order.id])).rows[0].status, "PAID");
+      assert.equal((await db.query("SELECT count(*)::int AS count FROM order_events WHERE order_id=$1 AND kind='CHAIN_SETTLEMENT'", [order.id])).rows[0].count, 2);
+
       await db.query(
         "UPDATE shop_settings SET gateway_last_seen=now(),printer_ready=true,printer_state='standby',available_batch_sizes=ARRAY[1,4] WHERE id=1",
       );

@@ -1,6 +1,7 @@
 import { decodePaymentSignatureHeader } from "@x402/core/http";
 import { decodeCardanoTransaction, normalizeConfirmationPolicy } from "@x402/cardano";
 import type { Env } from "./domain";
+import { query } from "./db";
 
 export type ChainOrder = { id: string; network: string; price_lovelace: string; signed_payload: string; tx_hash: string };
 export type ChainEvidence = { status: "CONFIRMED" | "CONFIRMING" | "NOT_FOUND" | "MISMATCH" | "UNAVAILABLE" | "NOT_CONFIGURED"; confirmations?: number; requiredConfirmations?: number };
@@ -49,4 +50,45 @@ export async function verifyOnChain(env: Env, order: ChainOrder): Promise<ChainE
     const requiredConfirmations = Math.max(1, policy.l1Confirmations);
     return { status: confirmations >= requiredConfirmations ? "CONFIRMED" : "CONFIRMING", confirmations, requiredConfirmations };
   } catch { return { status: "UNAVAILABLE" }; }
+}
+
+export type RecordedPaymentOrder = { id: string; network: string; price_lovelace: string };
+
+/**
+ * Reconcile one stored, signed payment from structured chain evidence.
+ * The timestamp claim bounds Blockfrost calls across Worker instances.
+ */
+export async function reconcileRecordedPayment(
+  env: Env,
+  order: RecordedPaymentOrder,
+  hash: string,
+): Promise<ChainEvidence | { status: "CHECK_AGAIN" }> {
+  const [attempt] = await query<{ signed_payload: string }>(
+    env,
+    `UPDATE payment_attempts SET chain_check_after=now()+interval '15 seconds'
+     WHERE order_id=$1 AND tx_hash=$2 AND signed_payload IS NOT NULL
+       AND (chain_check_after IS NULL OR chain_check_after<now())
+     RETURNING signed_payload`,
+    [order.id, hash],
+  );
+  if (!attempt) return { status: "CHECK_AGAIN" };
+  const chain = await verifyOnChain(env, { ...order, tx_hash: hash, signed_payload: attempt.signed_payload });
+  if (chain.status === "CONFIRMED") {
+    await query(
+      env,
+      `WITH paid AS (
+        UPDATE orders SET status='PAID',tx_hash=$2,paid_at=now(),updated_at=now()
+        WHERE id=$1 AND status='AWAITING_PAYMENT' AND tx_hash IS NULL RETURNING id
+      ), attempt AS (
+        UPDATE payment_attempts SET status='SETTLED'
+        WHERE order_id IN (SELECT id FROM paid) AND tx_hash=$2 RETURNING id
+      ), event AS (
+        INSERT INTO order_events(order_id,kind,details)
+        SELECT id,'CHAIN_SETTLEMENT',jsonb_build_object('transaction',$2::text,'source','blockfrost','confirmations',$3::int)
+        FROM paid RETURNING id
+      ) SELECT id FROM paid`,
+      [order.id, hash, chain.confirmations],
+    );
+  }
+  return chain;
 }

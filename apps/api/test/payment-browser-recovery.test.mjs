@@ -21,7 +21,7 @@ test('browser distinguishes rejected payments from uncertain settlement', async 
   });
   try {
     for (const [name, status, headers, resuming, expected] of [
-      ['initial verification rejection', 402, {}, false, 'failed'],
+      ['initial bare 402 after signing is uncertain', 402, {}, false, 'unknown'],
       ['recheck rejection cannot disprove an earlier submission', 402, {}, true, 'unknown'],
       ['generic settlement failure is uncertain even on first request', 402, receipt({ errorReason: 'unknown_error' }), false, 'unknown'],
       ['definitive settlement rejection', 402, receipt({ errorReason: 'exact_cardano_settlement_definitively_rejected' }), true, 'failed'],

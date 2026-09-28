@@ -10,7 +10,6 @@
  */
 import { x402Client, x402HTTPClient } from "@x402/core/client";
 import {
-  decodePaymentRequiredHeader,
   decodePaymentResponseHeader,
 } from "@x402/core/http";
 import type { PaymentPayload } from "@x402/core/types";
@@ -418,19 +417,9 @@ export async function sendPayment(
       message: `Payment did not settle (${receipt.errorReason}). You can start a new order and try again.`,
     };
   }
-  if (response.status === 402 && !receiptHeader && !resuming) {
-    const requiredHeader = response.headers.get("PAYMENT-REQUIRED");
-    let reason = "Payment was rejected before submission.";
-    if (requiredHeader) {
-      try {
-        reason = decodePaymentRequiredHeader(requiredHeader).error || reason;
-      } catch {
-        /* keep the readable fallback */
-      }
-    }
-    onStep({ id: "failed", title: "Payment rejected", detail: { reason } });
-    return { status: "failed", message: `Payment rejected: ${reason}` };
-  }
+  // Once a transaction has been signed and sent, a bare 402 cannot prove
+  // rejection: the facilitator might have broadcast it before timing out.
+  // Keep the original payment available for the next check.
   return unknown(
     `The payment service has not confirmed the transaction yet (HTTP ${response.status}). It may already be on-chain; keep checking the same payment.`,
   );

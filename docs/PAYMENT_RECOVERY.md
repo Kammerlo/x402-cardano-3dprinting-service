@@ -1,6 +1,6 @@
 # Delayed payments and recovery
 
-Checkout and Check payment status recheck the original signed transaction for up to ten minutes, with 15 seconds between completed requests (maximum 40 rechecks). No new wallet signature is requested. A delayed 402 is not proof that an earlier transaction failed.
+Checkout and Check payment status recheck the original signed transaction for up to ten minutes, with 15 seconds between completed requests (maximum 40 rechecks). No new wallet signature is requested. A delayed 402 is not proof that an earlier transaction failed. Once a signed payment has been sent, even the first bare 402 is treated as uncertain rather than a safe invitation to pay again.
 
 Customers can save the transaction hash and use Check payment in the storefront later, without a wallet connection. Orders and signed payments received by the backend remain in PostgreSQL when the browser closes. If the signed request never reached the backend, the server cannot recover its hash: the original tab still holds the signed payment, and a hash lookup clearly reports no linked order rather than claiming payment failure.
 
@@ -12,7 +12,7 @@ Customers can save the transaction hash and use Check payment in the storefront 
    - `BLOCKFROST_MAINNET_PROJECT_ID` for mainnet.
 3. Deploy the Worker. These runtime secrets are separate from the frontend's `VITE_BLOCKFROST_*` build variables.
 
-The public hash lookup only checks transactions already associated with an order. It uses the order's network and verifies the stored signed hash, payment terms, successful execution, receiving address, lovelace amount and canonical confirmation depth through Blockfrost. It honors the signed x402 confirmation policy, with a minimum of one newer block. Matching payments are atomically marked PAID with a CHAIN_SETTLEMENT event and become eligible for supervised printing. It never submits transactions. Script/escrow payments are not automatically reconciled by this direct-payment verifier.
+The normal signed-payment retry and the public hash lookup both check transactions already associated with an order when the facilitator cannot confirm them. A confirmed on-chain payment is recorded and returned as paid without a new wallet signature. It uses the order's network and verifies the stored signed hash, payment terms, successful execution, receiving address, lovelace amount and canonical confirmation depth through Blockfrost. It honors the signed x402 confirmation policy, with a minimum of one newer block. Matching payments are atomically marked PAID with a CHAIN_SETTLEMENT event and become eligible for supervised printing. It never submits transactions. Script/escrow payments are not automatically reconciled by this direct-payment verifier.
 
 Known pending hashes are limited to one provider check per 15 seconds across Worker instances. Missing credentials, provider outages, rate limits and 404s never mark an order paid or discard it. Hash lookups return only transaction, network, payment/fulfillment status and chain-check result—no customer information or order access secrets. A recorded payment is not continuously rechecked for later chain rollbacks.
 

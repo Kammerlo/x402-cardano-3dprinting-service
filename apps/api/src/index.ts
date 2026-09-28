@@ -5,7 +5,7 @@ import { secureHeaders } from "hono/secure-headers";
 import { query } from "./db";
 import { installAdminAuth } from "./adminAuth";
 import { processPayment } from "./payment";
-import { verifyOnChain, type ChainOrder, type ChainEvidence } from "./chainPayment";
+import { reconcileRecordedPayment, type ChainEvidence } from "./chainPayment";
 import {
   type Env,
   type Order,
@@ -233,22 +233,7 @@ app.get("/api/transactions/:hash", async (c) => {
   if (!order) return error("No order is linked to this transaction yet. This does not mean the transaction failed on-chain.", 404);
   let chain: ChainEvidence | { status: "CHECK_AGAIN" | "RECORDED" } = { status: "RECORDED" };
   if (!order.tx_hash && order.status === "AWAITING_PAYMENT") {
-    const [attempt] = await query<{ signed_payload: string }>(env,
-      `UPDATE payment_attempts SET chain_check_after=now()+interval '15 seconds'
-       WHERE order_id=$1 AND tx_hash=$2 AND (chain_check_after IS NULL OR chain_check_after<now())
-       RETURNING signed_payload`, [order.id, hash]);
-    chain = attempt ? await verifyOnChain(env, { ...order, tx_hash: hash, signed_payload: attempt.signed_payload } as ChainOrder) : { status: "CHECK_AGAIN" };
-    if (chain.status === "CONFIRMED") {
-      await query(env, `WITH paid AS (
-        UPDATE orders SET status='PAID',tx_hash=$2,paid_at=now(),updated_at=now()
-        WHERE id=$1 AND status='AWAITING_PAYMENT' AND tx_hash IS NULL RETURNING id
-      ), attempt AS (
-        UPDATE payment_attempts SET status='SETTLED' WHERE order_id IN (SELECT id FROM paid) AND tx_hash=$2 RETURNING id
-      ), event AS (
-        INSERT INTO order_events(order_id,kind,details)
-        SELECT id,'CHAIN_SETTLEMENT',jsonb_build_object('transaction',$2::text,'source','blockfrost','confirmations',$3::int) FROM paid RETURNING id
-      ) SELECT id FROM paid`, [order.id, hash, chain.confirmations]);
-    }
+    chain = await reconcileRecordedPayment(env, order, hash);
     const [latest] = await query<{ status: string; tx_hash: string | null }>(env, "SELECT status,tx_hash FROM orders WHERE id=$1", [order.id]);
     order.status = latest.status;
     order.tx_hash = latest.tx_hash;
