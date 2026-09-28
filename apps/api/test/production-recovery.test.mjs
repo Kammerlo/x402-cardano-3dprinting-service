@@ -79,6 +79,14 @@ test(
       });
       assert.equal(created.status, 201);
       const order = await created.json();
+      // A failing facilitator must not emit an opaque 500 before the wallet signs.
+      globalThis.fetch = async () => Response.json({ error: "private upstream failure" }, { status: 500 });
+      const unavailableOffer = await app.request(
+        `http://localhost/api/orders/${order.id}/pay`,
+        { method: "POST", headers: { "x-order-secret": order.access } }, env,
+      );
+      assert.equal(unavailableOffer.status, 503);
+      assert.match((await unavailableOffer.json()).error, /No payment was requested/);
       // Minimal decodeable CBOR; the test facilitator supplies verification.
       const transaction = Buffer.from("84a3008001800200a0f5f6", "hex").toString(
         "base64",
@@ -242,6 +250,17 @@ test(
       assert.equal(chainCalls, 4);
       assert.equal((await db.query("SELECT count(*)::int AS count FROM order_events WHERE order_id=$1 AND kind='CHAIN_SETTLEMENT'", [order.id])).rows[0].count, 1);
 
+      // The admin button checks the stored hash against the chain and reports
+      // the result, independent of repeated facilitator 402 responses.
+      await db.query("UPDATE orders SET status='AWAITING_PAYMENT',tx_hash=NULL WHERE id=$1", [order.id]);
+      await db.query("UPDATE payment_attempts SET chain_check_after=NULL WHERE order_id=$1", [order.id]);
+      const adminCheck = await req(`/api/admin/orders/${order.id}/reconcile`, {});
+      assert.equal(adminCheck.status, 200);
+      assert.deepEqual(
+        (({ status, transaction, chain }) => ({ status, transaction, chain }))(await adminCheck.json()),
+        { status: "PAID", transaction: hash, chain: "CONFIRMED" },
+      );
+
       // A facilitator can keep returning 402 even after the signed transaction
       // reaches the chain. The normal payment retry must recover the order.
       await db.query("UPDATE orders SET status='AWAITING_PAYMENT',tx_hash=NULL WHERE id=$1", [order.id]);
@@ -273,7 +292,7 @@ test(
       assert.equal((await recoveredFromPay.json()).transaction, hash);
       assert.ok(pendingSettlements >= 1);
       assert.equal((await db.query("SELECT status FROM orders WHERE id=$1", [order.id])).rows[0].status, "PAID");
-      assert.equal((await db.query("SELECT count(*)::int AS count FROM order_events WHERE order_id=$1 AND kind='CHAIN_SETTLEMENT'", [order.id])).rows[0].count, 2);
+      assert.equal((await db.query("SELECT count(*)::int AS count FROM order_events WHERE order_id=$1 AND kind='CHAIN_SETTLEMENT'", [order.id])).rows[0].count, 3);
 
       await db.query(
         "UPDATE shop_settings SET gateway_last_seen=now(),printer_ready=true,printer_state='standby',available_batch_sizes=ARRAY[1,4] WHERE id=1",
