@@ -182,7 +182,7 @@ app.post("/api/orders", async (c) => {
     /[\u0000-\u001f\u007f]/.test(country) ||
     b?.productId !== "proof-token"
   )
-    return error("Enter a delivery address, country, postal code and valid email");
+    return error("Enter a delivery address, country and valid email");
   const id = crypto.randomUUID(),
     access = token(),
     price = env.PRICE_LOVELACE || "5000000";
