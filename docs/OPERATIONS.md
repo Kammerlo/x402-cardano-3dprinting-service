@@ -22,7 +22,7 @@ Files determine capacity: `proof-token-N.gcode` contains exactly N customer obje
 
 ## Backups and rollout
 
-Back up before migrations, including `008_admin_and_dynamic_batches.sql`. Migrations retain orders and history. Never use `docker compose down -v` on a live installation. Rebuild API, web and gateway together with `docker compose up -d --build`; old gateway heartbeats do not supply the new G-code manifest and are rejected until upgraded.
+Back up before migrations, including `009_chain_payment_checks.sql`. Migrations retain orders and history. Never use `docker compose down -v` on a live installation. Rebuild API, web and gateway together with `docker compose up -d --build`; old gateway heartbeats do not supply the new G-code manifest and are rejected until upgraded.
 
 Maintain encrypted daily Postgres backups and point-in-time recovery where available. For local Compose: `docker compose exec -T db pg_dump -U print -d print -Fc > orders.dump`. Restore into a separate database and verify orders, payment attempts and current plate. Preserve the `gateway_data` volume. After any restore, reconcile chain payments and the physical printer before permitting starts; a backup can predate both a payment and a physical print. Restored admin sessions should be invalidated by rotating `ADMIN_TOKEN`.
 
