@@ -111,7 +111,7 @@ export async function processPayment(
       // Another request may be waiting on the facilitator after broadcast.
       // Reconcile independently if the signed transaction is already final.
       const recovered = await recoverOnChain(env, o, id, signedHash);
-      if (recovered) return recovered;
+      if (recovered) { c.res = recovered; return c.res; }
       return error(
         "Payment reconciliation is already running; retry the same payment shortly",
         409,
@@ -150,7 +150,7 @@ export async function processPayment(
         // stored transaction against the chain before asking the browser to wait.
         if (signedHash) {
           const recovered = await recoverOnChain(env, o, id, signedHash);
-          if (recovered) return recovered;
+          if (recovered) { c.res = recovered; return c.res; }
         }
         return c.res;
       }
