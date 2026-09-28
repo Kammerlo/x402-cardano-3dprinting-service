@@ -27,6 +27,8 @@ test('browser distinguishes rejected payments from uncertain settlement', async 
       ['definitive settlement rejection', 402, receipt({ errorReason: 'exact_cardano_settlement_definitively_rejected' }), true, 'failed'],
       ['confirmed expiry', 402, receipt({ errorReason: 'exact_cardano_settlement_failed', extra: { status: 'expired' } }), true, 'failed'],
       ['pending confirmation', 402, receipt({ errorReason: 'settlement_pending' }), true, 'pending'],
+      ['pending receipt without a hash is not a mismatched payment', 402, receipt({ errorReason: 'settlement_pending', transaction: '' }), true, 'pending'],
+      ['unbound rejection cannot unlock a new payment', 402, receipt({ errorReason: 'exact_cardano_settlement_definitively_rejected', transaction: '' }), true, 'unknown'],
       ['mismatched rejection cannot unlock payment', 402, receipt({ errorReason: 'exact_cardano_settlement_definitively_rejected', transaction: '0'.repeat(64) }), true, 'unknown'],
       ['server error', 503, {}, false, 'unknown'],
       ['successful settlement', 200, receipt({ success: true }), true, 'settled'],
@@ -44,6 +46,16 @@ test('browser distinguishes rejected payments from uncertain settlement', async 
         assert.deepEqual(removed, ['failed', 'settled'].includes(expected) ? ['print-prepared'] : []);
       });
     }
+    await t.test('a failed receipt with no hash reports its reason and chain status', async () => {
+      globalThis.fetch = async () => Response.json({}, { status: 402, headers: {
+        ...receipt({ errorReason: 'settlement_pending', transaction: '' }),
+        'X-Payment-Chain-Status': 'NOT_CONFIGURED',
+      } });
+      const steps = [];
+      const result = await sendPayment(payment, step => steps.push(step), true);
+      assert.equal(result.status, 'pending');
+      assert.equal(steps.find(step => step.id === 'response').detail.chainStatus, 'NOT_CONFIGURED');
+    });
     await t.test('a provider configuration problem is visible without losing the signed payment', async () => {
       globalThis.fetch = async () => Response.json({}, { status: 402, headers: { 'X-Payment-Chain-Status': 'NOT_CONFIGURED' } });
       const steps = [];
