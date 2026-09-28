@@ -68,7 +68,7 @@ Checkout accepts a free-text country or territory and international postal codes
 
 ## 4. Verify before taking sales
 
-1. Confirm `GET /api/health` shows configured payment settings and `GET /api/ready` reaches Neon. Neither proves a successful on-chain payment. Check gateway heartbeat and supported G-code sizes in admin.
+1. Confirm `GET /api/health` shows configured payment settings and `chainChecksConfigured: true` for the current network, and `GET /api/ready` reaches Neon. Neither proves a successful on-chain payment. Check gateway heartbeat and supported G-code sizes in admin.
 2. On **preprod**, complete a real wallet payment: inspect HTTP 402 and the `PAYMENT-RESPONSE`, transaction hash, settled order and chain confirmation. Interrupt one payment and reconcile the **same** signed transaction rather than asking for another signature.
 3. With the printer offline, verify payment still settles into a waiting order. Restore the gateway, empty the plate, start a batch in admin, inspect the actual print, then mark it sent. Test a restart mid-print and resolve ambiguous status manually.
 4. Restore a database backup into a separate database and reconcile its state against the chain and physical printer. Monitor 5xx, stale heartbeat, payment attempts needing review, queue age and disk usage. See [operations](OPERATIONS.md) and [security](SECURITY.md).

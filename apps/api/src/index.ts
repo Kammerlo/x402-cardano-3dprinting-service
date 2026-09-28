@@ -93,6 +93,11 @@ app.get("/api/health", (c) => {
         !!env.FACILITATOR_URL &&
         sellerIsValid(env, network || "cardano:mainnet"),
       network,
+      chainChecksConfigured: network === "cardano:preprod"
+        ? !!env.BLOCKFROST_PREPROD_PROJECT_ID
+        : network === "cardano:mainnet"
+          ? !!env.BLOCKFROST_MAINNET_PROJECT_ID
+          : false,
     },
     network && env.FACILITATOR_URL && sellerIsValid(env, network) ? 200 : 503,
   );

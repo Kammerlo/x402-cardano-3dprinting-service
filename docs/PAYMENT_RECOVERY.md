@@ -26,3 +26,9 @@ Admin → awaiting payment → More actions → Check stored payment checks the 
 ## Operator override
 
 Under an awaiting-payment order's More actions, use Mark verified transaction as settled only after verifying the network, receiving address and full amount on-chain. Paste the stored hash to confirm. The action requires an authenticated admin, CSRF protection, a matching saved attempt and no active payment reconciliation. It records MANUAL_SETTLEMENT plus the normal admin audit, and releases the order for printing. It does not create a facilitator receipt or transfer funds. Repeated requests cannot create duplicate paid events.
+
+## Distinguishing provider and facilitator failures
+
+`CARDANO_NETWORK` selects the network for new orders, but it does not configure Blockfrost. `NOT_CONFIGURED` comes from the saved order's network. Check the public hash lookup's `network` field and set the corresponding `BLOCKFROST_PREPROD_PROJECT_ID` or `BLOCKFROST_MAINNET_PROJECT_ID` as a runtime secret on the API Worker serving the request. `GET /api/health` now reports `chainChecksConfigured` for the current shop network without exposing the project ID. A previously created order may be on a different network. Cloudflare preview and production configurations may use different bindings.
+
+A failed x402 settlement receipt may omit its transaction hash. The browser keeps the signed payment unresolved and reports the facilitator's safe error code, if present, rather than calling an empty hash a mismatch. Successful receipts and any definitive rejection that would allow a new order still require the exact signed transaction hash and network.
