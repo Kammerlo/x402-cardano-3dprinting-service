@@ -79,6 +79,25 @@ test(
       });
       assert.equal(created.status, 201);
       const order = await created.json();
+      const international = {
+        productId: "proof-token",
+        name: "International Customer",
+        email: "international@example.com",
+        addressLine1: "10 Downing Street",
+        postalCode: "SW1A 2AA",
+        city: "London",
+        country: "United Kingdom",
+      };
+      assert.equal((await req("/api/orders", { ...international, country: "" })).status, 400);
+      const internationalCreated = await req("/api/orders", international);
+      assert.equal(internationalCreated.status, 201);
+      const internationalOrder = await internationalCreated.json();
+      assert.deepEqual(
+        (await db.query("SELECT postal_code,country FROM orders WHERE id=$1", [internationalOrder.id])).rows[0],
+        { postal_code: "SW1A 2AA", country: "United Kingdom" },
+      );
+      const internationalDashboard = await req("/api/admin/orders?search=international%40example.com");
+      assert.equal((await internationalDashboard.json()).orders[0].country, "United Kingdom");
       // A failing facilitator must not emit an opaque 500 before the wallet signs.
       globalThis.fetch = async () => Response.json({ error: "private upstream failure" }, { status: 500 });
       const unavailableOffer = await app.request(
