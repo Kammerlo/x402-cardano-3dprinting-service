@@ -72,3 +72,5 @@
 .lookup-facts dd{margin:0;color:#1b2f60;font-size:13px;font-weight:700;line-height:1.5;overflow-wrap:anywhere}
 .lookup-guidance{margin:18px 0 0;color:#5c6d84;font-size:12px;line-height:1.6}
 @media(max-width:700px){.checkout-section .wallet-connect{display:grid;grid-template-columns:1fr 1fr}.checkout-section .wallet-connect label,.checkout-section .wallet-connect small{grid-column:1/-1}.lookup-form{grid-template-columns:1fr}.lookup-form .primary{width:100%;justify-content:center;white-space:normal}.lookup-facts>div{grid-template-columns:1fr;gap:4px}.transaction-lookup{padding-block:60px 75px}.checkout-action-row{align-items:stretch}.checkout-action-row>*{flex:1 1 auto}}
+
+@media(max-width:700px){.checkout-section .form-pair{grid-template-columns:1fr}}
