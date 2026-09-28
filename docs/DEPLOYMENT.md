@@ -49,6 +49,10 @@ In Cloudflare Workers & Pages → your Worker → Settings → Variables and Sec
 | `SELLER_ADDRESS` | Secret | Matching receiving address |
 | `ADMIN_TOKEN` | Secret | One `openssl rand -hex 32` result |
 | `GATEWAY_TOKEN` | Secret | A **different** `openssl rand -hex 32` result |
+| `BLOCKFROST_PREPROD_PROJECT_ID` | Secret | Preprod project ID for payment recovery and admin checks |
+| `BLOCKFROST_MAINNET_PROJECT_ID` | Secret | Mainnet project ID for payment recovery and admin checks |
+
+Set both Blockfrost secrets if you have unresolved orders on both networks. The API uses the ID matching each order's recorded network, even after the storefront switches to mainnet. The `VITE_BLOCKFROST_*` browser build values do not configure backend recovery.
 
 Variables and secrets can also be set with `npx wrangler secret put NAME --config apps/api/wrangler.jsonc` for each secret. Do not write real values into `wrangler.jsonc`, `.env.example`, source, CI, or a public issue. Keep `ADMIN_ALLOW_BEARER` unset. The admin expects HTTPS and an exact same-origin `FRONTEND_ORIGIN`; `ADMIN_ALLOW_INSECURE_LOCALHOST` is for local HTTP only. Redeploy/restart if your platform requires it after changing variables.
 
