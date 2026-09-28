@@ -96,6 +96,19 @@ test(
         (await db.query("SELECT postal_code,country FROM orders WHERE id=$1", [internationalOrder.id])).rows[0],
         { postal_code: "SW1A 2AA", country: "United Kingdom" },
       );
+      const noPostalCode = await req("/api/orders", {
+        ...international,
+        email: "no-postcode@example.com",
+        city: "Dubai",
+        country: "United Arab Emirates",
+        postalCode: "",
+      });
+      assert.equal(noPostalCode.status, 201);
+      const noPostalOrder = await noPostalCode.json();
+      assert.equal(
+        (await db.query("SELECT postal_code FROM orders WHERE id=$1", [noPostalOrder.id])).rows[0].postal_code,
+        "",
+      );
       const internationalDashboard = await req("/api/admin/orders?search=international%40example.com");
       assert.equal((await internationalDashboard.json()).orders[0].country, "United Kingdom");
       // A failing facilitator must not emit an opaque 500 before the wallet signs.
