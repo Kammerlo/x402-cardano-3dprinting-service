@@ -169,18 +169,21 @@ app.post("/api/orders", async (c) => {
     email = clean(b?.email, 160),
     line1 = clean(b?.addressLine1, 180),
     line2 = clean(b?.addressLine2, 180),
-    postal = clean(b?.postalCode, 16),
-    city = clean(b?.city, 100);
+    postal = clean(b?.postalCode, 32),
+    city = clean(b?.city, 100),
+    country = clean(b?.country, 80);
   if (
     !name ||
     !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ||
     !line1 ||
-    !/^[0-9]{5}$/.test(postal) ||
+    !postal ||
+    /[\u0000-\u001f\u007f]/.test(postal) ||
     !city ||
-    b?.country !== "DE" ||
+    country.length < 2 ||
+    /[\u0000-\u001f\u007f]/.test(country) ||
     b?.productId !== "proof-token"
   )
-    return error("Enter a German delivery address and valid email");
+    return error("Enter a delivery address, country, postal code and valid email");
   const id = crypto.randomUUID(),
     access = token(),
     price = env.PRICE_LOVELACE || "5000000";
@@ -189,7 +192,7 @@ app.post("/api/orders", async (c) => {
   const rows = await query<{ id: string }>(
     env,
     `INSERT INTO orders (id,access_hash,customer_name,email,address_line1,address_line2,postal_code,city,country,price_lovelace,network)
-    SELECT $1,$2,$3,$4,$5,$6,$7,$8,'DE',$9,$10 WHERE (SELECT NOT paused FROM shop_settings WHERE id=1)
+    SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11 WHERE (SELECT NOT paused FROM shop_settings WHERE id=1)
     RETURNING id`,
     [
       id,
@@ -200,6 +203,7 @@ app.post("/api/orders", async (c) => {
       line2,
       postal,
       city,
+      country,
       price,
       network,
     ],
