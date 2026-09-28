@@ -259,32 +259,32 @@ app.post("/api/orders/:id/pay", async (c) => {
 app.post("/api/admin/orders/:id/reconcile", async (c) => {
   const env = config(c);
   const id = c.req.param("id");
-  const o = (
-    await query<Order>(env, "SELECT * FROM orders WHERE id=$1", [id])
-  )[0];
-  if (!o) return error("Order not found", 404);
-  if (o.status !== "AWAITING_PAYMENT") return c.json(safeOrder(o));
-  const attempt = (
-    await query<{ signed_payload: string }>(
-      env,
-      "SELECT signed_payload FROM payment_attempts WHERE order_id=$1",
-      [id],
-    )
-  )[0];
-  if (!attempt?.signed_payload)
-    return error("No signed payment to reconcile", 409);
-  const headers = new Headers(c.req.raw.headers);
-  headers.set("payment-signature", attempt.signed_payload);
-  const paymentContext = new Context<{ Bindings: Env }>(
-    new Request(new URL(`/api/orders/${id}/pay`, c.req.url), {
-      method: "POST",
-      headers,
-    }),
-    { env },
+  const [order] = await query<Order>(
+    env, "SELECT id,status,network,price_lovelace,tx_hash FROM orders WHERE id=$1", [id],
   );
-  return processPayment(paymentContext, env, id, o, attempt.signed_payload);
+  if (!order) return error("Order not found", 404);
+  if (order.status !== "AWAITING_PAYMENT")
+    return c.json({ id, status: order.status, transaction: order.tx_hash, chain: "ALREADY_SETTLED" });
+  const [attempt] = await query<{ tx_hash: string }>(
+    env, "SELECT tx_hash FROM payment_attempts WHERE order_id=$1", [id],
+  );
+  if (!attempt?.tx_hash) return error("No signed payment is stored for this order", 409);
+  const chain = await reconcileRecordedPayment(env, order, attempt.tx_hash);
+  const [latest] = await query<{ status: string; tx_hash: string | null }>(
+    env, "SELECT status,tx_hash FROM orders WHERE id=$1", [id],
+  );
+  // Report the check itself, even when it does not settle the order. A repeated
+  // facilitator 402 must never be mistaken for a definitive chain rejection.
+  return c.json({
+    id,
+    status: latest.status,
+    transaction: attempt.tx_hash,
+    chain: chain.status,
+    ...(chain.status === "CONFIRMING"
+      ? { confirmations: chain.confirmations, requiredConfirmations: chain.requiredConfirmations }
+      : {}),
+  });
 });
-
 app.post("/api/admin/orders/:id/settle", async (c) => {
   const id = c.req.param("id");
   const body = await c.req.json().catch(() => null);
