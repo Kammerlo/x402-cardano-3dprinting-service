@@ -598,7 +598,7 @@ export default function App() {
                     <p className="fineprint">
                       {isTestNetwork
                         ? "Delivery details are collected to test checkout only. No shipment is provided for test-network orders."
-                        : "Delivery currently available within Germany. We’ll use your address solely to fulfill this order. Shipping is included in the displayed price."}
+                        : "Enter your complete delivery address, including country. Shipping is included in the displayed price; international delivery times may vary."}
                     </p>
                     {saved.length > 0 && (
                       <div className="availability-note" role="status">
@@ -679,8 +679,8 @@ export default function App() {
                             <input
                               name="postalCode"
                               required
-                              pattern="[0-9]{5}"
-                              placeholder="10115"
+                              maxLength={32}
+                              placeholder="Postal or ZIP code"
                             />
                           </label>
                           <label>
@@ -695,9 +695,14 @@ export default function App() {
                         </div>
                         <label>
                           Country
-                          <select name="country" required defaultValue="DE">
-                            <option value="DE">Germany</option>
-                          </select>
+                          <input
+                            name="country"
+                            required
+                            minLength={2}
+                            maxLength={80}
+                            autoComplete="country-name"
+                            placeholder="e.g. Germany"
+                          />
                         </label>
                         <button
                           className="primary form-submit"
