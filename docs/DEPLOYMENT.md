@@ -64,7 +64,7 @@ Follow [the standalone gateway guide](GATEWAY_DEPLOYMENT.md) and copy `.env.gate
 
 ## Shipping destinations and pricing
 
-Checkout accepts a free-text country or territory and international postal codes. The database country column is already text, so this change needs no new migration. The displayed ADA price currently includes shipping for every destination; there is no country-specific shipping calculation or destination restriction. Set `PRICE_LOVELACE` with worldwide fulfillment costs in mind before taking mainnet orders, and verify that you can deliver to each destination you intend to serve. The admin delivery address shows the submitted country.
+Checkout accepts a free-text country or territory and international postal codes, including destinations where no postal code applies. The database country column is already text, so this change needs no new migration. The displayed ADA price currently includes shipping for every destination; there is no country-specific shipping calculation or destination restriction. Set `PRICE_LOVELACE` with worldwide fulfillment costs in mind before taking mainnet orders, and verify that you can deliver to each destination you intend to serve. The admin delivery address shows the submitted country.
 
 ## 4. Verify before taking sales
 
