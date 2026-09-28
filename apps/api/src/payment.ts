@@ -111,7 +111,7 @@ export async function processPayment(
       // Another request may be waiting on the facilitator after broadcast.
       // Reconcile independently if the signed transaction is already final.
       const recovered = await recoverOnChain(env, o, id, signedHash);
-      if (recovered) return recovered;
+      if (recovered) { c.res = recovered; return c.res; }
       return error(
         "Payment reconciliation is already running; retry the same payment shortly",
         409,
@@ -139,10 +139,30 @@ export async function processPayment(
         server,
       );
       // The handler prepares a response; x402 buffers it and settles before exposing it.
-      const immediate = await middleware(c, async () => {
-        c.res = c.json({ id, status: "PAID" });
-      });
-      if (immediate instanceof Response) c.res = immediate;
+      try {
+        const immediate = await middleware(c, async () => {
+          c.res = c.json({ id, status: "PAID" });
+        });
+        if (immediate instanceof Response) c.res = immediate;
+      } catch (cause) {
+        // Do not echo facilitator responses or URLs, which may contain credentials.
+        console.error("x402 middleware failed", {
+          orderId: id, network, stage: signedHash ? "confirmation" : "offer",
+          errorType: cause instanceof Error ? cause.name : typeof cause,
+        });
+        c.res = error(
+          signedHash
+            ? "Payment confirmation is temporarily unavailable. Keep this order and check the same transaction again."
+            : "The payment service cannot issue an offer right now. No payment was requested. Keep this order and retry later.",
+          503,
+        );
+        return c.res;
+      }
+      if (!signedHash && c.res.status >= 500) {
+        console.error("x402 offer returned an error", { orderId: id, network, status: c.res.status });
+        c.res = error("The payment service cannot issue an offer right now. No payment was requested. Keep this order and retry later.", 503);
+        return c.res;
+      }
       cachedReceipt = c.res.headers.get("PAYMENT-RESPONSE");
       if (!c.res.ok || !cachedReceipt) {
         // A 402 after signing can mean that the facilitator broadcast the
@@ -150,7 +170,7 @@ export async function processPayment(
         // stored transaction against the chain before asking the browser to wait.
         if (signedHash) {
           const recovered = await recoverOnChain(env, o, id, signedHash);
-          if (recovered) return recovered;
+          if (recovered) { c.res = recovered; return c.res; }
         }
         return c.res;
       }

@@ -91,8 +91,18 @@ export async function runPaymentFlow(
       paymentRequiredHeader: first.headers.has("PAYMENT-REQUIRED"),
     },
   });
-  if (first.status !== 402)
-    throw new Error(`Expected a payment offer, received HTTP ${first.status}.`);
+  if (first.status !== 402) {
+    // Before signing, the API may report configuration or facilitator outages.
+    // Display only our own short JSON error, never arbitrary HTML or remote URLs.
+    const contentType = first.headers.get("content-type") || "";
+    const body = contentType.includes("application/json")
+      ? await first.json().catch(() => null)
+      : null;
+    const message = typeof body?.error === "string" && body.error.length <= 240
+      ? body.error
+      : `Payment offer unavailable (HTTP ${first.status}). Keep this order and try again later.`;
+    throw new Error(message);
+  }
 
   const http = new x402HTTPClient(
     x402Client.fromConfig({

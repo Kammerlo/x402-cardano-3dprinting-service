@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { decodeCardanoTransaction } from "@x402/cardano";
 import app from "../src/index.ts";
+import { verifyOnChain } from "../src/chainPayment.ts";
 import { closeLocalPool } from "../src/db.ts";
 
 // Infrastructure integration tests. The facilitator is a deterministic test double;
@@ -78,6 +79,46 @@ test(
       });
       assert.equal(created.status, 201);
       const order = await created.json();
+      const international = {
+        productId: "proof-token",
+        name: "International Customer",
+        email: "international@example.com",
+        addressLine1: "10 Downing Street",
+        postalCode: "SW1A 2AA",
+        city: "London",
+        country: "United Kingdom",
+      };
+      assert.equal((await req("/api/orders", { ...international, country: "" })).status, 400);
+      const internationalCreated = await req("/api/orders", international);
+      assert.equal(internationalCreated.status, 201);
+      const internationalOrder = await internationalCreated.json();
+      assert.deepEqual(
+        (await db.query("SELECT postal_code,country FROM orders WHERE id=$1", [internationalOrder.id])).rows[0],
+        { postal_code: "SW1A 2AA", country: "United Kingdom" },
+      );
+      const noPostalCode = await req("/api/orders", {
+        ...international,
+        email: "no-postcode@example.com",
+        city: "Dubai",
+        country: "United Arab Emirates",
+        postalCode: "",
+      });
+      assert.equal(noPostalCode.status, 201);
+      const noPostalOrder = await noPostalCode.json();
+      assert.equal(
+        (await db.query("SELECT postal_code FROM orders WHERE id=$1", [noPostalOrder.id])).rows[0].postal_code,
+        "",
+      );
+      const internationalDashboard = await req("/api/admin/orders?search=international%40example.com");
+      assert.equal((await internationalDashboard.json()).orders[0].country, "United Kingdom");
+      // A failing facilitator must not emit an opaque 500 before the wallet signs.
+      globalThis.fetch = async () => Response.json({ error: "private upstream failure" }, { status: 500 });
+      const unavailableOffer = await app.request(
+        `http://localhost/api/orders/${order.id}/pay`,
+        { method: "POST", headers: { "x-order-secret": order.access } }, env,
+      );
+      assert.equal(unavailableOffer.status, 503);
+      assert.match((await unavailableOffer.json()).error, /No payment was requested/);
       // Minimal decodeable CBOR; the test facilitator supplies verification.
       const transaction = Buffer.from("84a3008001800200a0f5f6", "hex").toString(
         "base64",
@@ -241,6 +282,17 @@ test(
       assert.equal(chainCalls, 4);
       assert.equal((await db.query("SELECT count(*)::int AS count FROM order_events WHERE order_id=$1 AND kind='CHAIN_SETTLEMENT'", [order.id])).rows[0].count, 1);
 
+      // The admin button checks the stored hash against the chain and reports
+      // the result, independent of repeated facilitator 402 responses.
+      await db.query("UPDATE orders SET status='AWAITING_PAYMENT',tx_hash=NULL WHERE id=$1", [order.id]);
+      await db.query("UPDATE payment_attempts SET chain_check_after=NULL WHERE order_id=$1", [order.id]);
+      const adminCheck = await req(`/api/admin/orders/${order.id}/reconcile`, {});
+      assert.equal(adminCheck.status, 200);
+      assert.deepEqual(
+        (({ status, transaction, chain }) => ({ status, transaction, chain }))(await adminCheck.json()),
+        { status: "PAID", transaction: hash, chain: "CONFIRMED" },
+      );
+
       // A facilitator can keep returning 402 even after the signed transaction
       // reaches the chain. The normal payment retry must recover the order.
       await db.query("UPDATE orders SET status='AWAITING_PAYMENT',tx_hash=NULL WHERE id=$1", [order.id]);
@@ -264,12 +316,15 @@ test(
         if (path.endsWith("/blocks/latest")) return Response.json({ height: 120 });
         throw new Error(`Unexpected fetch: ${path}`);
       };
+      const directEvidence = await verifyOnChain(env, { id: order.id, network: env.CARDANO_NETWORK, price_lovelace: "5000000", signed_payload: signature, tx_hash: hash });
+      assert.equal(directEvidence.status, "CONFIRMED", JSON.stringify(directEvidence));
       const recoveredFromPay = await pay();
-      assert.equal(recoveredFromPay.status, 200, await recoveredFromPay.clone().text());
+      const attemptState = (await db.query("SELECT status,chain_check_after,receipt FROM payment_attempts WHERE order_id=$1", [order.id])).rows[0];
+      assert.equal(recoveredFromPay.status, 200, JSON.stringify({ response: await recoveredFromPay.clone().text(), attemptState }));
       assert.equal((await recoveredFromPay.json()).transaction, hash);
       assert.ok(pendingSettlements >= 1);
       assert.equal((await db.query("SELECT status FROM orders WHERE id=$1", [order.id])).rows[0].status, "PAID");
-      assert.equal((await db.query("SELECT count(*)::int AS count FROM order_events WHERE order_id=$1 AND kind='CHAIN_SETTLEMENT'", [order.id])).rows[0].count, 2);
+      assert.equal((await db.query("SELECT count(*)::int AS count FROM order_events WHERE order_id=$1 AND kind='CHAIN_SETTLEMENT'", [order.id])).rows[0].count, 3);
 
       await db.query(
         "UPDATE shop_settings SET gateway_last_seen=now(),printer_ready=true,printer_state='standby',available_batch_sizes=ARRAY[1,4] WHERE id=1",

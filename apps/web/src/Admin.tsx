@@ -175,7 +175,24 @@ export function Admin({ onClose }: { onClose: () => void }) {
     try {
       const result = await request<{
         batch?: { id: string; size: number } | null;
+        status?: string;
+        chain?: string;
+        confirmations?: number;
+        requiredConfirmations?: number;
       }>(path, csrf, body);
+      if (path.endsWith("/reconcile")) {
+        const messages: Record<string, string> = {
+          CONFIRMED: "Transaction confirmed on-chain. The order is paid and ready for fulfillment.",
+          CONFIRMING: `Transaction found on-chain: ${result.confirmations ?? 0} of ${result.requiredConfirmations ?? "?"} required confirmations. Check again shortly.`,
+          NOT_FOUND: "This transaction is not visible to the chain provider yet. Keep the order and check again later.",
+          MISMATCH: "Transaction data does not match the signed order. Review the payment before taking action.",
+          UNAVAILABLE: "The chain provider could not be reached. Keep the order and check again later.",
+          NOT_CONFIGURED: "On-chain checks are not configured on the API Worker. Add the Blockfrost project ID for this network.",
+          CHECK_AGAIN: "A chain check just ran. Wait 15 seconds and check again.",
+          ALREADY_SETTLED: "This order is already paid.",
+        };
+        setNotice(messages[result.chain || ""] || "Stored payment checked. Refresh the order status.");
+      }
       if (path.endsWith("start-next")) {
         setPlateEmpty(false);
         setNotice(

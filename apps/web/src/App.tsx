@@ -598,14 +598,14 @@ export default function App() {
                     <p className="fineprint">
                       {isTestNetwork
                         ? "Delivery details are collected to test checkout only. No shipment is provided for test-network orders."
-                        : "Delivery currently available within Germany. We’ll use your address solely to fulfill this order. Shipping is included in the displayed price."}
+                        : "Enter your complete delivery address, including country. Shipping is included in the displayed price; international delivery times may vary."}
                     </p>
                     {saved.length > 0 && (
                       <div className="availability-note" role="status">
                         <strong>Payments to check</strong>
                         <p>These earlier orders may still be paid. Open them to check before paying again. Recovery is saved in this browser tab.</p>
                         {saved.map((item) => (
-                          <button key={item.order.id} type="button" disabled={busy} onClick={() => {
+                          <button className="checkout-secondary" key={item.order.id} type="button" disabled={busy} onClick={() => {
                             try {
                               preserveCurrentPayment();
                               sessionStorage.setItem("print-prepared", item.prepared);
@@ -635,7 +635,7 @@ export default function App() {
                             {wallets.map((name) => <option key={name} value={name}>{name}</option>)}
                           </select>
                         </label>
-                        <button type="button" disabled={busy} onClick={refreshWallets}>Refresh wallets</button>
+                        <button className="checkout-secondary" type="button" disabled={busy} onClick={refreshWallets}>Refresh wallets</button>
                         <p className="fineprint">We check your wallet and the shop’s network before saving your order. No payment is signed during this check.</p>
                         <label>
                           Your name
@@ -675,12 +675,11 @@ export default function App() {
                         </label>
                         <div className="form-pair">
                           <label>
-                            Postal code
+                            Postal / ZIP code
                             <input
                               name="postalCode"
-                              required
-                              pattern="[0-9]{5}"
-                              placeholder="10115"
+                              maxLength={32}
+                              placeholder="Optional if not used"
                             />
                           </label>
                           <label>
@@ -695,9 +694,14 @@ export default function App() {
                         </div>
                         <label>
                           Country
-                          <select name="country" required defaultValue="DE">
-                            <option value="DE">Germany</option>
-                          </select>
+                          <input
+                            name="country"
+                            required
+                            minLength={2}
+                            maxLength={80}
+                            autoComplete="country-name"
+                            placeholder="e.g. Germany"
+                          />
                         </label>
                         <button
                           className="primary form-submit"
@@ -707,8 +711,7 @@ export default function App() {
                           <ArrowRight size={18} />
                         </button>
                         <p className="form-disclaimer">
-                          By continuing, you agree to the delivery and refund
-                          notes below. Continuing connects your selected wallet to validate the network. You approve the payment separately.
+                          Continuing checks your wallet and network. You approve the payment separately. Please review the delivery and refund notes below.
                         </p>
                       </form>
                     ) : (
@@ -717,25 +720,28 @@ export default function App() {
                           <Check size={18} /> ORDER{" "}
                           {order.id.slice(0, 8).toUpperCase()}
                         </div>
-                        <p>
-                          Status:{" "}
-                          <strong>{order.status.replaceAll("_", " ")}</strong>
-                        </p>
+                        <div className="payment-status-card">
+                          <span>Payment and print status</span>
+                          <strong>{order.status.replaceAll("_", " ").toLowerCase()}</strong>
+                          <small>Order reference: {order.id}</small>
+                        </div>
                         {order.signedTransaction && !order.transaction && (
-                          <div>
-                            <small>Signed transaction · settlement unconfirmed</small>
-                            <code style={{ display: "block", overflowWrap: "anywhere" }}>{order.signedTransaction}</code>
-                            <small>This hash identifies your signed payment; it does not prove it was submitted.</small>
-                            <button type="button" onClick={async () => {
-                              try { await navigator.clipboard.writeText(order.signedTransaction!); setMessage("Transaction hash copied. Keep it to check your order later."); }
-                              catch { setMessage("Select and copy the hash manually to check later."); }
-                            }}>Copy transaction hash</button>
-                            <a href="#transaction-status" onClick={() => setLookupHash(order.signedTransaction!)}>Check this transaction</a>
+                          <div className="payment-hash-card">
+                            <strong>Signed transaction</strong>
+                            <code>{order.signedTransaction}</code>
+                            <p>This hash identifies your signed payment. Settlement has not been confirmed yet.</p>
+                            <div className="checkout-action-row">
+                              <button className="checkout-secondary" type="button" onClick={async () => {
+                                try { await navigator.clipboard.writeText(order.signedTransaction!); setMessage("Transaction hash copied. Keep it to check your order later."); }
+                                catch { setMessage("Select and copy the hash manually to check later."); }
+                              }}>Copy hash</button>
+                              <a className="checkout-link" href="#transaction-status" onClick={() => setLookupHash(order.signedTransaction!)}>Check transaction <ArrowRight size={15} /></a>
+                            </div>
                           </div>
                         )}
                         {order.transaction && (
                           <a
-                            className="text-link"
+                            className="checkout-link payment-explorer-link"
                             target="_blank"
                             rel="noreferrer"
                             href={txUrl(order.transaction, order.network)}
@@ -762,10 +768,11 @@ export default function App() {
                                 ))}
                               </select>
                             </label>
-                            <button type="button" onClick={refreshWallets}>
+                            <button className="checkout-secondary" type="button" onClick={refreshWallets}>
                               Refresh wallets
                             </button>
                             <button
+                              className="checkout-secondary"
                               type="button"
                               disabled={busy || !selectedWallet}
                               onClick={connectWallet}
@@ -808,15 +815,18 @@ export default function App() {
                           </div>
                         )}
                         {sessionStorage.getItem("print-prepared") && (
-                          <p role="status">Payment confirmation is incomplete. You can check again later using your transaction hash below. Orders and signed payments received by our backend stay saved even if you close this tab. Do not sign or pay again. Order reference: {order.id}</p>
+                          <div className="payment-recovery-note" role="status">
+                            <strong>Confirmation is still pending</strong>
+                            <p>Your order and any signed payment received by our server remain saved. Use the hash above to check again later. Please do not sign or pay again while this payment is unresolved.</p>
+                          </div>
                         )}
-                        <button className="subtle" onClick={reset} disabled={busy}>
+                        <button className="checkout-secondary checkout-new-order" type="button" onClick={reset} disabled={busy}>
                           {order.paymentFailed ? "Try again with a new order" : "Start another order"}
                         </button>
                       </div>
                     )}
                     {message && (
-                      <div className="error-message" role="alert">
+                      <div className="checkout-message" role="alert">
                         {message}
                       </div>
                     )}
@@ -840,24 +850,32 @@ export default function App() {
                 </div>
               </div>
             </section>
-            <section className="shell" id="transaction-status" style={{ paddingBlock: "2rem" }}>
-              <h2>Check your transaction</h2>
-              <p>Enter your transaction hash to check this shop’s payment and print status. No wallet connection is needed.</p>
-              <form onSubmit={lookupTransaction} className="order-form">
-                <label>Transaction hash
-                  <input value={lookupHash} onChange={(event) => { setLookupHash(event.target.value); setLookupResult(null); setLookupMessage(""); }} required pattern="[a-fA-F0-9]{64}" maxLength={64} placeholder="64-character transaction hash" disabled={lookupBusy} />
-                </label>
-                <button className="primary" disabled={lookupBusy}>{lookupBusy ? "CHECKING…" : "CHECK TRANSACTION STATUS"}</button>
-              </form>
-              {lookupMessage && <p role="alert">{lookupMessage}</p>}
-              {lookupResult && <div role="status">
-                <p>Payment: <strong>{lookupResult.paymentStatus === "SETTLED" ? "Recorded as settled" : "Awaiting payment confirmation"}</strong></p>
-                <p>Order: <strong>{lookupResult.orderStatus.replaceAll("_", " ")}</strong></p>
-                <a href={txUrl(lookupResult.transaction, lookupResult.network)} target="_blank" rel="noreferrer">View transaction on explorer ↗</a>
-                <p>Blockchain check: <strong>{({ CONFIRMED: "Verified on-chain", CONFIRMING: "On-chain, waiting for more confirmations", NOT_FOUND: "Not visible to the blockchain provider yet", MISMATCH: "Payment needs operator review", UNAVAILABLE: "Blockchain provider temporarily unavailable", NOT_CONFIGURED: "Automatic blockchain checking is not configured yet", CHECK_AGAIN: "A recent check is running or just finished. Check again in 15 seconds", RECORDED: "Payment already recorded" } as Record<string, string>)[lookupResult.chain?.status || ""]}</strong></p>
-                {lookupResult.chain?.confirmations !== undefined && <p>Confirmation depth: {lookupResult.chain.confirmations} / {lookupResult.chain.requiredConfirmations}</p>}
-                <p>You can close this page and check again later using this hash. Orders and signed payments received by our backend remain saved. Do not pay again while confirmation is pending.</p>
-              </div>}
+            <section className="shell transaction-lookup" id="transaction-status">
+              <div className="lookup-panel">
+                <div className="lookup-heading">
+                  <span className="eyebrow">PAYMENT RECOVERY</span>
+                  <h2>Check your transaction<span className="period">.</span></h2>
+                  <p>Enter a transaction hash to see its payment and print status. You do not need to reconnect your wallet.</p>
+                </div>
+                <form onSubmit={lookupTransaction} className="order-form lookup-form">
+                  <label htmlFor="transaction-hash">Transaction hash
+                    <input id="transaction-hash" value={lookupHash} onChange={(event) => { setLookupHash(event.target.value); setLookupResult(null); setLookupMessage(""); }} required pattern="[a-fA-F0-9]{64}" maxLength={64} placeholder="64-character transaction hash" disabled={lookupBusy} />
+                  </label>
+                  <button className="primary" type="submit" disabled={lookupBusy}>{lookupBusy ? "CHECKING…" : "CHECK TRANSACTION STATUS"} <ArrowRight size={16} /></button>
+                </form>
+                {lookupMessage && <div className="checkout-message" role="alert">{lookupMessage}</div>}
+                {lookupResult && <div className="lookup-result" role="status">
+                  <span className="eyebrow">TRANSACTION STATUS</span>
+                  <dl className="lookup-facts">
+                    <div><dt>Payment</dt><dd>{lookupResult.paymentStatus === "SETTLED" ? "Recorded as settled" : "Awaiting confirmation"}</dd></div>
+                    <div><dt>Order</dt><dd>{lookupResult.orderStatus.replaceAll("_", " ").toLowerCase()}</dd></div>
+                    <div><dt>Blockchain check</dt><dd>{({ CONFIRMED: "Verified on-chain", CONFIRMING: "On-chain, awaiting more confirmations", NOT_FOUND: "Not visible to the provider yet", MISMATCH: "Needs operator review", UNAVAILABLE: "Provider temporarily unavailable", NOT_CONFIGURED: "Automatic checks are not configured yet", CHECK_AGAIN: "Recently checked. Try again in 15 seconds", RECORDED: "Payment already recorded" } as Record<string, string>)[lookupResult.chain?.status || ""] || "Pending"}</dd></div>
+                    {lookupResult.chain?.confirmations !== undefined && <div><dt>Confirmations</dt><dd>{lookupResult.chain.confirmations} / {lookupResult.chain.requiredConfirmations}</dd></div>}
+                  </dl>
+                  <a className="checkout-link" href={txUrl(lookupResult.transaction, lookupResult.network)} target="_blank" rel="noreferrer">View on explorer <ExternalLink size={15} /></a>
+                  <p className="lookup-guidance">You can check this hash again later. If confirmation is pending, keep the original payment and do not pay again.</p>
+                </div>}
+              </div>
             </section>
             <section className="faq shell">
               <div>

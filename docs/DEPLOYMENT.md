@@ -49,6 +49,10 @@ In Cloudflare Workers & Pages → your Worker → Settings → Variables and Sec
 | `SELLER_ADDRESS` | Secret | Matching receiving address |
 | `ADMIN_TOKEN` | Secret | One `openssl rand -hex 32` result |
 | `GATEWAY_TOKEN` | Secret | A **different** `openssl rand -hex 32` result |
+| `BLOCKFROST_PREPROD_PROJECT_ID` | Secret | Preprod project ID for payment recovery and admin checks |
+| `BLOCKFROST_MAINNET_PROJECT_ID` | Secret | Mainnet project ID for payment recovery and admin checks |
+
+Set both Blockfrost secrets if you have unresolved orders on both networks. The API uses the ID matching each order's recorded network, even after the storefront switches to mainnet. The `VITE_BLOCKFROST_*` browser build values do not configure backend recovery.
 
 Variables and secrets can also be set with `npx wrangler secret put NAME --config apps/api/wrangler.jsonc` for each secret. Do not write real values into `wrangler.jsonc`, `.env.example`, source, CI, or a public issue. Keep `ADMIN_ALLOW_BEARER` unset. The admin expects HTTPS and an exact same-origin `FRONTEND_ORIGIN`; `ADMIN_ALLOW_INSECURE_LOCALHOST` is for local HTTP only. Redeploy/restart if your platform requires it after changing variables.
 
@@ -57,6 +61,10 @@ Configure an access policy with MFA for `/admin` and `/api/admin/*`, without put
 ## 3. Connect the home gateway
 
 Follow [the standalone gateway guide](GATEWAY_DEPLOYMENT.md) and copy `.env.gateway.example` to a private `.env.gateway`. `API_URL` is this Worker's origin; `GATEWAY_TOKEN` must match the Worker secret exactly. The gateway sends outbound requests only. The operator physically checks the plate and authorizes each next batch in `/admin`. Paid orders remain in Neon if the printer or gateway is offline.
+
+## Shipping destinations and pricing
+
+Checkout accepts a free-text country or territory and international postal codes, including destinations where no postal code applies. The database country column is already text, so this change needs no new migration. The displayed ADA price currently includes shipping for every destination; there is no country-specific shipping calculation or destination restriction. Set `PRICE_LOVELACE` with worldwide fulfillment costs in mind before taking mainnet orders, and verify that you can deliver to each destination you intend to serve. The admin delivery address shows the submitted country.
 
 ## 4. Verify before taking sales
 
