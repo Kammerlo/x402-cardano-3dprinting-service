@@ -554,7 +554,7 @@ export default function App() {
                   </div>
                   <p>
                     {isTestNetwork
-                      ? "Try the Cardano payment flow with test ADA. Test orders are not printed or shipped."
+                      ? "Try the Cardano payment flow with test ADA. Test orders are not shipped."
                       : "One small object. One real Cardano transaction. A story you can put on your desk."}
                   </p>
                 </div>
@@ -573,8 +573,8 @@ export default function App() {
                     {isTestNetwork && (
                       <div className="testnet-warning" role="alert">
                         <span>TEST NETWORK · {checkoutNetwork?.split(":")[1]?.toUpperCase()}</span>
-                        <strong>This is a test environment. No print will be shipped.</strong>
-                        <p>Payments here use test ADA with no monetary value. This checkout is for testing the payment flow; do not expect a physical order or delivery.</p>
+                        <strong>This is a test environment. No shipment will be provided.</strong>
+                        <p>Payments here use test ADA with no monetary value. This checkout is for testing the payment flow; do not expect physical delivery.</p>
                       </div>
                     )}
                     {catalog?.paused && (
@@ -597,7 +597,7 @@ export default function App() {
                     </div>
                     <p className="fineprint">
                       {isTestNetwork
-                        ? "Delivery details are collected to test checkout only. Test-network orders are not printed or shipped."
+                        ? "Delivery details are collected to test checkout only. No shipment is provided for test-network orders."
                         : "Delivery currently available within Germany. We’ll use your address solely to fulfill this order. Shipping is included in the displayed price."}
                     </p>
                     {saved.length > 0 && (
@@ -875,7 +875,7 @@ export default function App() {
                   </summary>
                   <p>
                     {isTestNetwork
-                      ? `No. This checkout runs on Cardano ${checkoutNetwork?.split(":")[1] || "testnet"}. Test ADA has no monetary value, and no print or shipment is provided. Confirm the test amount in your wallet before signing.`
+                      ? `No. This checkout runs on Cardano ${checkoutNetwork?.split(":")[1] || "testnet"}. Test ADA has no monetary value, and no shipment is provided. Confirm the test amount in your wallet before signing.`
                       : "On mainnet, yes. Confirm the ADA amount in your wallet before signing. This creates a real purchase."}
                   </p>
                 </details>
@@ -885,7 +885,7 @@ export default function App() {
                   </summary>
                   <p>
                     {isTestNetwork
-                      ? "Test-network orders are for payment testing. No print will be shipped."
+                      ? "Test-network orders are for payment testing. No shipment will be provided."
                       : "Prints are grouped into supervised batches. Timing can vary; we will contact you by email if there is a problem."}
                   </p>
                 </details>
