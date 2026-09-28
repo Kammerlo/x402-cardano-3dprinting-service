@@ -63,7 +63,7 @@ app.use("/api/*", async (c, next) => {
       "x-order-secret",
       "payment-signature",
     ],
-    exposeHeaders: ["PAYMENT-REQUIRED", "PAYMENT-RESPONSE"],
+    exposeHeaders: ["PAYMENT-REQUIRED", "PAYMENT-RESPONSE", "X-Payment-Chain-Status"],
     allowMethods: ["GET", "POST", "OPTIONS"],
   })(c, next);
 });
