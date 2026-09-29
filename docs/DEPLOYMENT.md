@@ -1,6 +1,6 @@
 # Hosted deployment: Cloudflare Worker, Neon and home gateway
 
-The Worker serves the built Vite storefront and the API on one HTTPS origin. Neon stores orders and payment recovery state. A separate Docker gateway polls the Worker and reaches the printer on its private LAN; it has no inbound port. See [local Compose setup](../README.md#run-locally-with-real-services) if you are developing on one machine. There is no simulated payment or printer path.
+The Worker serves the built Vite storefront and the API on one HTTPS origin. Neon stores orders and payment recovery state. A separate Docker gateway polls the Worker and reaches the printer on its private LAN; it has no inbound port. See [local Compose setup](../README.md#run-it-locally) if you are developing on one machine. There is no simulated payment or printer path.
 
 ## Prerequisites
 
