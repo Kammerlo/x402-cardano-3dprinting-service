@@ -251,7 +251,13 @@ app.get("/api/transactions/:hash", async (c) => {
     network: order.network,
     paymentStatus: order.tx_hash === hash ? "SETTLED" : "UNCONFIRMED",
     orderStatus: order.status,
-    chain,
+    // Provider diagnostics are visible only through authenticated admin actions.
+    chain: {
+      status: chain.status,
+      ...("checkedAt" in chain && chain.checkedAt ? { checkedAt: chain.checkedAt } : {}),
+      ...("confirmations" in chain && chain.confirmations !== undefined
+        ? { confirmations: chain.confirmations, requiredConfirmations: chain.requiredConfirmations } : {}),
+    },
   });
 });
 
@@ -288,6 +294,8 @@ app.post("/api/admin/orders/:id/reconcile", async (c) => {
     status: latest.status,
     transaction: attempt.tx_hash,
     chain: chain.status,
+    ...(chain.status === "UNAVAILABLE" && "diagnostic" in chain && chain.diagnostic
+      ? { diagnostic: chain.diagnostic } : {}),
     ...(chain.status === "CONFIRMING"
       ? { confirmations: chain.confirmations, requiredConfirmations: chain.requiredConfirmations }
       : {}),
