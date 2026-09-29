@@ -4,7 +4,8 @@ import type { Env } from "./domain";
 import { query } from "./db";
 
 export type ChainOrder = { id: string; network: string; price_lovelace: string; signed_payload: string; tx_hash: string };
-export type ChainEvidence = { status: "CONFIRMED" | "CONFIRMING" | "NOT_FOUND" | "MISMATCH" | "UNAVAILABLE" | "NOT_CONFIGURED"; confirmations?: number; requiredConfirmations?: number; checkedAt?: string };
+type ChainDiagnostic = { stage: string; reason: string; httpStatus?: number };
+export type ChainEvidence = { status: "CONFIRMED" | "CONFIRMING" | "NOT_FOUND" | "MISMATCH" | "UNAVAILABLE" | "NOT_CONFIGURED"; confirmations?: number; requiredConfirmations?: number; checkedAt?: string; diagnostic?: ChainDiagnostic };
 
 class ChainCheckError extends Error {
   constructor(
@@ -59,12 +60,15 @@ export async function verifyOnChain(env: Env, order: ChainOrder): Promise<ChainE
       get('/blocks/latest', "chain_tip"),
     ]);
     if (!utxos || !block || !tip) {
-      console.error("chain check unavailable", {
-        orderId: order.id, network: order.network,
+      const diagnostic = {
         stage: !utxos ? "transaction_utxos" : !block ? "transaction_block" : "chain_tip",
         reason: "not_found",
+      };
+      console.error("chain check unavailable", {
+        orderId: order.id, network: order.network,
+        ...diagnostic,
       });
-      return { status: "UNAVAILABLE" };
+      return { status: "UNAVAILABLE", diagnostic };
     }
     stage = "chain_data_validation";
     if (utxos.hash !== order.tx_hash || block.hash !== tx.block || block.height !== tx.block_height || !Number.isSafeInteger(tip.height) || tip.height < block.height)
@@ -80,14 +84,17 @@ export async function verifyOnChain(env: Env, order: ChainOrder): Promise<ChainE
     return { status: confirmations >= requiredConfirmations ? "CONFIRMED" : "CONFIRMING", confirmations, requiredConfirmations };
   } catch (cause) {
     // Never log the provider key, signed payload, raw upstream body or error message.
-    console.error("chain check unavailable", {
-      orderId: order.id, network: order.network,
+    const diagnostic = {
       stage: cause instanceof ChainCheckError ? cause.stage : stage,
       reason: cause instanceof ChainCheckError ? cause.reason : "unexpected_error",
       ...(cause instanceof ChainCheckError && cause.httpStatus !== undefined
         ? { httpStatus: cause.httpStatus } : {}),
+    };
+    console.error("chain check unavailable", {
+      orderId: order.id, network: order.network,
+      ...diagnostic,
     });
-    return { status: "UNAVAILABLE" };
+    return { status: "UNAVAILABLE", diagnostic };
   }
 }
 
