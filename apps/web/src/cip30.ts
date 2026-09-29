@@ -64,7 +64,10 @@ export async function createCip30Signer(
   preflight = false,
 ): Promise<ClientCardanoSigner> {
   if (!provider.projectId?.trim()) {
-    throw new Error("Set the matching VITE_BLOCKFROST_*_PROJECT_ID for this network and restart the web server.");
+    const variable = provider.network === "cardano:mainnet"
+      ? "VITE_BLOCKFROST_MAINNET_PROJECT_ID"
+      : "VITE_BLOCKFROST_PREPROD_PROJECT_ID";
+    throw new Error(`This site was built without ${variable}. The operator must add it to the frontend build environment, then rebuild and redeploy the site.`);
   }
   const api = walletApi as Cip30WalletApi;
   async function checkNetwork() {
