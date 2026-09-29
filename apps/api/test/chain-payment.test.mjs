@@ -5,6 +5,9 @@ import { verifyOnChain } from '../src/chainPayment.ts';
 
 test('on-chain recovery verifies the stored payment, recipient, amount and confirmation depth', async (t) => {
   const originalFetch = globalThis.fetch;
+  const originalError = console.error;
+  const diagnostics = [];
+  console.error = (...args) => diagnostics.push(args);
   const transaction = Buffer.from('84a3008001800200a0f5f6', 'hex').toString('base64');
   const hash = decodeCardanoTransaction(transaction).txHash;
   const env = { SELLER_ADDRESS: 'addr_test1seller', BLOCKFROST_PREPROD_PROJECT_ID: 'test-key' };
@@ -38,8 +41,20 @@ test('on-chain recovery verifies the stored payment, recipient, amount and confi
     });
     globalThis.fetch = async () => Response.json({}, { status: 429 });
     assert.equal((await verifyOnChain(env, order)).status, 'UNAVAILABLE');
+    assert.deepEqual(diagnostics.at(-1), [
+      'chain check unavailable',
+      { orderId: 'order', network: 'cardano:preprod', stage: 'transaction', reason: 'http_error', httpStatus: 429 },
+    ]);
+    assert.equal((await verifyOnChain(env, { ...order, signed_payload: 'not-a-payment' })).status, 'UNAVAILABLE');
+    assert.deepEqual(diagnostics.at(-1), [
+      'chain check unavailable',
+      { orderId: 'order', network: 'cardano:preprod', stage: 'signed_payment', reason: 'unexpected_error' },
+    ]);
     assert.equal((await verifyOnChain({}, order)).status, 'NOT_CONFIGURED');
     assert.equal((await verifyOnChain(env, { ...order, network: 'wrong-network' })).status, 'MISMATCH');
     assert.equal((await verifyOnChain(env, { ...order, tx_hash: 'f'.repeat(64) })).status, 'MISMATCH');
-  } finally { globalThis.fetch = originalFetch; }
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.error = originalError;
+  }
 });
