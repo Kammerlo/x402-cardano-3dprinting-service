@@ -35,4 +35,6 @@ If a known on-chain transaction instead reports `UNAVAILABLE`, inspect the API W
 
 If Cloudflare Live Logs show only the HTTP request, the authenticated admin's **Check stored payment** action also reports the safe failure stage, reason and provider HTTP status. Public transaction lookups never include these diagnostics. A recent check may return a cached `UNAVAILABLE` without the diagnostic; wait at least 15 seconds and check again. The Worker explicitly enables observability in `apps/api/wrangler.jsonc` for stored logs after deployment.
 
+The Blockfrost verifier uses `redirect: "manual"` and rejects any 3xx response without following it. Cloudflare Workers reject `redirect: "error"` before making an outbound request, which previously caused every automatic chain lookup on a Worker to report `UNAVAILABLE` with `stage: "transaction"` and `reason: "request_failed"` even when the same transaction was readable from another machine.
+
 A failed x402 settlement receipt may omit its transaction hash. The browser keeps the signed payment unresolved and reports the facilitator's safe error code, if present, rather than calling an empty hash a mismatch. Successful receipts and any definitive rejection that would allow a new order still require the exact signed transaction hash and network.
