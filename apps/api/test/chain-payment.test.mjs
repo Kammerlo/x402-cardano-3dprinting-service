@@ -34,6 +34,7 @@ test('on-chain recovery verifies the stored payment, recipient, amount and confi
       globalThis.fetch = async (url, options) => {
         assert.ok(String(url).startsWith('https://cardano-preprod.blockfrost.io/api/v0/'));
         assert.equal(options.headers.project_id, 'test-key');
+        assert.equal(options.redirect, 'manual');
         const value = data[new URL(url).pathname.replace('/api/v0', '')];
         return Response.json(value, { status: value ? 200 : 404 });
       };
@@ -44,9 +45,16 @@ test('on-chain recovery verifies the stored payment, recipient, amount and confi
     assert.equal(providerFailure.status, 'UNAVAILABLE');
     assert.deepEqual(providerFailure.diagnostic, { stage: 'transaction', reason: 'http_error', httpStatus: 429 });
     assert.ok(!JSON.stringify(providerFailure).includes('test-key'));
+    globalThis.fetch = async (_url, options) => {
+      assert.equal(options.redirect, 'manual');
+      return new Response(null, { status: 302, headers: { location: 'https://other.example/collect' } });
+    };
+    const redirect = await verifyOnChain(env, order);
+    assert.equal(redirect.status, 'UNAVAILABLE');
+    assert.deepEqual(redirect.diagnostic, { stage: 'transaction', reason: 'http_error', httpStatus: 302 });
     assert.deepEqual(diagnostics.at(-1), [
       'chain check unavailable',
-      { orderId: 'order', network: 'cardano:preprod', stage: 'transaction', reason: 'http_error', httpStatus: 429 },
+      { orderId: 'order', network: 'cardano:preprod', stage: 'transaction', reason: 'http_error', httpStatus: 302 },
     ]);
     const decodeFailure = await verifyOnChain(env, { ...order, signed_payload: 'not-a-payment' });
     assert.equal(decodeFailure.status, 'UNAVAILABLE');

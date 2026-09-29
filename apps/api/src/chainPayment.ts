@@ -37,11 +37,16 @@ export async function verifyOnChain(env: Env, order: ChainOrder): Promise<ChainE
     const get = async (path: string, requestStage: string) => {
       let response: Response;
       try {
-        response = await fetch(base + path, { headers: { project_id: key }, signal, redirect: "error" });
+        // workerd rejects redirect: "error" before sending the request. Manual
+        // mode keeps the project ID from being forwarded to a redirect target.
+        response = await fetch(base + path, { headers: { project_id: key }, signal, redirect: "manual" });
       } catch {
         throw new ChainCheckError(requestStage, "request_failed");
       }
       if (response.status === 404) return null;
+      // Do not follow redirects carrying the Blockfrost project ID.
+      if (response.status >= 300 && response.status < 400)
+        throw new ChainCheckError(requestStage, "http_error", response.status);
       if (!response.ok) throw new ChainCheckError(requestStage, "http_error", response.status);
       try {
         return await response.json();
