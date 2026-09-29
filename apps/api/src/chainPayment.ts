@@ -4,7 +4,16 @@ import type { Env } from "./domain";
 import { query } from "./db";
 
 export type ChainOrder = { id: string; network: string; price_lovelace: string; signed_payload: string; tx_hash: string };
-export type ChainEvidence = { status: "CONFIRMED" | "CONFIRMING" | "NOT_FOUND" | "MISMATCH" | "UNAVAILABLE" | "NOT_CONFIGURED"; confirmations?: number; requiredConfirmations?: number; checkedAt?: string };
+type ChainDiagnostic = { stage: string; reason: string; httpStatus?: number };
+export type ChainEvidence = { status: "CONFIRMED" | "CONFIRMING" | "NOT_FOUND" | "MISMATCH" | "UNAVAILABLE" | "NOT_CONFIGURED"; confirmations?: number; requiredConfirmations?: number; checkedAt?: string; diagnostic?: ChainDiagnostic };
+
+class ChainCheckError extends Error {
+  constructor(
+    readonly stage: string,
+    readonly reason: "http_error" | "invalid_json" | "request_failed",
+    readonly httpStatus?: number,
+  ) { super(reason); }
+}
 
 // Check trusted structured chain data, never HTML/explorer availability.
 export async function verifyOnChain(env: Env, order: ChainOrder): Promise<ChainEvidence> {
@@ -12,6 +21,7 @@ export async function verifyOnChain(env: Env, order: ChainOrder): Promise<ChainE
   if (!preprod && order.network !== "cardano:mainnet") return { status: "MISMATCH" };
   const key = preprod ? env.BLOCKFROST_PREPROD_PROJECT_ID : env.BLOCKFROST_MAINNET_PROJECT_ID;
   if (!key) return { status: "NOT_CONFIGURED" };
+  let stage = "signed_payment";
   try {
     const payment = decodePaymentSignatureHeader(order.signed_payload);
     const accepted = payment.accepted;
@@ -24,20 +34,48 @@ export async function verifyOnChain(env: Env, order: ChainOrder): Promise<ChainE
       return { status: "MISMATCH" };
     const base = `https://cardano-${preprod ? "preprod" : "mainnet"}.blockfrost.io/api/v0`;
     const signal = AbortSignal.timeout(12_000);
-    const get = async (path: string) => {
-      const response = await fetch(base + path, { headers: { project_id: key }, signal, redirect: "error" });
+    const get = async (path: string, requestStage: string) => {
+      let response: Response;
+      try {
+        // workerd rejects redirect: "error" before sending the request. Manual
+        // mode keeps the project ID from being forwarded to a redirect target.
+        response = await fetch(base + path, { headers: { project_id: key }, signal, redirect: "manual" });
+      } catch {
+        throw new ChainCheckError(requestStage, "request_failed");
+      }
       if (response.status === 404) return null;
-      if (!response.ok) throw new Error("Chain provider unavailable");
-      return response.json();
+      // Do not follow redirects carrying the Blockfrost project ID.
+      if (response.status >= 300 && response.status < 400)
+        throw new ChainCheckError(requestStage, "http_error", response.status);
+      if (!response.ok) throw new ChainCheckError(requestStage, "http_error", response.status);
+      try {
+        return await response.json();
+      } catch {
+        throw new ChainCheckError(requestStage, "invalid_json", response.status);
+      }
     };
-    const tx = await get(`/txs/${order.tx_hash}`);
+    const tx = await get(`/txs/${order.tx_hash}`, "transaction");
     if (!tx) return { status: "NOT_FOUND" };
     if (tx.hash !== order.tx_hash || tx.valid_contract !== true || !Number.isSafeInteger(tx.block_height) || tx.block_height < 0)
       return { status: "MISMATCH" };
+    stage = "chain_data";
     const [utxos, block, tip] = await Promise.all([
-      get(`/txs/${order.tx_hash}/utxos`), get(`/blocks/${tx.block_height}`), get('/blocks/latest'),
+      get(`/txs/${order.tx_hash}/utxos`, "transaction_utxos"),
+      get(`/blocks/${tx.block_height}`, "transaction_block"),
+      get('/blocks/latest', "chain_tip"),
     ]);
-    if (!utxos || !block || !tip) return { status: "UNAVAILABLE" };
+    if (!utxos || !block || !tip) {
+      const diagnostic = {
+        stage: !utxos ? "transaction_utxos" : !block ? "transaction_block" : "chain_tip",
+        reason: "not_found",
+      };
+      console.error("chain check unavailable", {
+        orderId: order.id, network: order.network,
+        ...diagnostic,
+      });
+      return { status: "UNAVAILABLE", diagnostic };
+    }
+    stage = "chain_data_validation";
     if (utxos.hash !== order.tx_hash || block.hash !== tx.block || block.height !== tx.block_height || !Number.isSafeInteger(tip.height) || tip.height < block.height)
       return { status: "MISMATCH" };
     if (!Array.isArray(utxos.outputs)) return { status: "MISMATCH" };
@@ -49,7 +87,20 @@ export async function verifyOnChain(env: Env, order: ChainOrder): Promise<ChainE
     const confirmations = tip.height - block.height;
     const requiredConfirmations = Math.max(1, policy.l1Confirmations);
     return { status: confirmations >= requiredConfirmations ? "CONFIRMED" : "CONFIRMING", confirmations, requiredConfirmations };
-  } catch { return { status: "UNAVAILABLE" }; }
+  } catch (cause) {
+    // Never log the provider key, signed payload, raw upstream body or error message.
+    const diagnostic = {
+      stage: cause instanceof ChainCheckError ? cause.stage : stage,
+      reason: cause instanceof ChainCheckError ? cause.reason : "unexpected_error",
+      ...(cause instanceof ChainCheckError && cause.httpStatus !== undefined
+        ? { httpStatus: cause.httpStatus } : {}),
+    };
+    console.error("chain check unavailable", {
+      orderId: order.id, network: order.network,
+      ...diagnostic,
+    });
+    return { status: "UNAVAILABLE", diagnostic };
+  }
 }
 
 export type RecordedPaymentOrder = { id: string; network: string; price_lovelace: string };
