@@ -70,6 +70,18 @@ A completed print **never** starts the next plate by itself. A printer outage do
 
 ## How the application is put together
 
+For the hosted setup, the browser and printer reach the same API from different sides. The gateway initiates its own outbound connection; the printer is not exposed to the internet.
+
+```mermaid
+flowchart TB
+    Buyer["Customer browser and wallet"] -->|x402 HTTP| API["Cloudflare storefront and API"]
+    API -->|settle payment| F["Hosted facilitator"]
+    F --> C["Cardano"]
+    API <-->|orders and history| DB["Neon PostgreSQL"]
+    G["Private gateway"] -->|polls for paid work| API
+    G -->|local network| P["Moonraker and printer"]
+```
+
 | Part | Responsibility | Why it matters |
 | --- | --- | --- |
 | `apps/web` | Storefront, CIP-30 wallet, x402 trace, transaction lookup and admin UI | The customer sees the offer and authorizes the exact Cardano payment |
