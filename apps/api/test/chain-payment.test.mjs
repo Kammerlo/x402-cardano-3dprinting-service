@@ -40,12 +40,17 @@ test('on-chain recovery verifies the stored payment, recipient, amount and confi
       assert.equal((await verifyOnChain(env, order)).status, expected);
     });
     globalThis.fetch = async () => Response.json({}, { status: 429 });
-    assert.equal((await verifyOnChain(env, order)).status, 'UNAVAILABLE');
+    const providerFailure = await verifyOnChain(env, order);
+    assert.equal(providerFailure.status, 'UNAVAILABLE');
+    assert.deepEqual(providerFailure.diagnostic, { stage: 'transaction', reason: 'http_error', httpStatus: 429 });
+    assert.ok(!JSON.stringify(providerFailure).includes('test-key'));
     assert.deepEqual(diagnostics.at(-1), [
       'chain check unavailable',
       { orderId: 'order', network: 'cardano:preprod', stage: 'transaction', reason: 'http_error', httpStatus: 429 },
     ]);
-    assert.equal((await verifyOnChain(env, { ...order, signed_payload: 'not-a-payment' })).status, 'UNAVAILABLE');
+    const decodeFailure = await verifyOnChain(env, { ...order, signed_payload: 'not-a-payment' });
+    assert.equal(decodeFailure.status, 'UNAVAILABLE');
+    assert.deepEqual(decodeFailure.diagnostic, { stage: 'signed_payment', reason: 'unexpected_error' });
     assert.deepEqual(diagnostics.at(-1), [
       'chain check unavailable',
       { orderId: 'order', network: 'cardano:preprod', stage: 'signed_payment', reason: 'unexpected_error' },
