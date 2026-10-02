@@ -102,6 +102,10 @@ You need Docker Compose, a CIP-30 wallet on the selected Cardano network, a comp
 
 For Cloudflare, Neon and a gateway-only server, follow the [deployment guide](docs/DEPLOYMENT.md). Keep `VITE_BLOCKFROST_*_PROJECT_ID` in the **frontend build environment** for the selected network and `BLOCKFROST_*_PROJECT_ID` in the **API runtime** for chain recovery. Browser build values are public. The gateway needs neither project ID.
 
+## Demo terms, privacy and order limit
+
+This shop is a **demo**: the printed token is free and the ADA payment covers shipping and handling only. The storefront says so in the hero, price breakdown, checkout and FAQ, and customers must tick an acknowledgement before ordering. `/privacy` and `/imprint` are rendered from `OPERATOR_*` variables. Fonts are self-hosted and the site sets no cookies and uses no tracking. Delivery data is erased automatically after `PII_RETENTION_DAYS` (default 90), and `MAX_ORDERS` caps the number of paid orders. Details and the remaining legal gaps (withdrawal notice, terms, legal review) are in [deployment](docs/DEPLOYMENT.md#5-legal-pages-order-limit-and-data-retention).
+
 ## Before accepting real orders
 
 A working payment demo is one part of a commercial service. Before mainnet sales, verify real wallet and facilitator behavior, recovery after interrupted requests, backup restoration, printer failure handling, shipping costs and destinations, customer support, refunds, privacy notices, admin access and monitoring. A refund action in the dashboard records a refund that was made separately; it does not transfer ADA. See the [production review](docs/PRODUCTION_REVIEW.md), [security guide](docs/SECURITY.md), and [operations guide](docs/OPERATIONS.md) for the checks and limits.

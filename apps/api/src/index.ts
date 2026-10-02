@@ -14,6 +14,13 @@ import {
   error,
 } from "./domain";
 import { clean, constantEqual, digest, secretMatches, token } from "./security";
+import {
+  SOLD_ORDERS_SQL,
+  capGuardParams,
+  orderCapFor,
+  soldOrders,
+} from "./orderCap";
+import { retentionDaysFor, scheduleErasure } from "./privacy";
 
 const app = new Hono<{ Bindings: Env }>();
 const config = (c: { env: Env }) =>
@@ -32,7 +39,7 @@ async function orderFor(env: Env, id: string, secret: string | undefined) {
   if (!/^[0-9a-f-]{36}$/i.test(id) || !secret) return null;
   const rows = await query<Order>(
     env,
-    "SELECT o.id, o.access_hash, o.status, o.network, o.price_lovelace, o.tx_hash, o.batch_id, o.created_at, p.tx_hash AS signed_tx_hash FROM orders o LEFT JOIN payment_attempts p ON p.order_id=o.id WHERE o.id=$1",
+    "SELECT o.id, o.access_hash, o.status, o.network, o.price_lovelace, o.tx_hash, o.batch_id, o.created_at, o.personal_data_erased_at, p.tx_hash AS signed_tx_hash FROM orders o LEFT JOIN payment_attempts p ON p.order_id=o.id WHERE o.id=$1",
     [id],
   );
   return rows[0] && constantEqual(await digest(secret), rows[0].access_hash)
@@ -63,7 +70,7 @@ app.use("/api/*", async (c, next) => {
       "x-order-secret",
       "payment-signature",
     ],
-    exposeHeaders: ["PAYMENT-REQUIRED", "PAYMENT-RESPONSE", "X-Payment-Chain-Status"],
+    exposeHeaders: ["PAYMENT-REQUIRED", "PAYMENT-RESPONSE", "X-Payment-Chain-Status", "X-Payment-Refused"],
     allowMethods: ["GET", "POST", "OPTIONS"],
   })(c, next);
 });
@@ -106,6 +113,28 @@ app.get("/api/ready", async (c) => {
   await query(config(c), "SELECT id FROM shop_settings WHERE id=1");
   return c.json({ ok: true });
 });
+// Operator identity for the privacy notice and imprint. Served even while the
+// payment configuration is incomplete, so the legal pages never disappear.
+app.get("/api/legal", (c) => {
+  const env = config(c);
+  const value = (key: string) => clean(env[key], 600);
+  const operator = {
+    name: value("OPERATOR_NAME"),
+    address: value("OPERATOR_ADDRESS").replace(/\\n/g, "\n"),
+    email: value("OPERATOR_EMAIL"),
+    phone: value("OPERATOR_PHONE"),
+    vatId: value("OPERATOR_VAT_ID"),
+    representative: value("OPERATOR_REPRESENTATIVE"),
+    register: value("OPERATOR_REGISTER"),
+  };
+  return c.json({
+    operator,
+    supervisoryAuthority: value("PRIVACY_SUPERVISORY_AUTHORITY"),
+    retentionDays: retentionDaysFor(env),
+    network: networkFor(env),
+    configured: !!(operator.name && operator.address && operator.email),
+  });
+});
 app.get("/api/catalog", async (c) => {
   const env = config(c),
     network = networkFor(env);
@@ -129,6 +158,9 @@ app.get("/api/catalog", async (c) => {
     "SELECT count(*)::text AS count FROM orders WHERE status IN ('PAID','BATCHED','PRINTING')",
   );
   const s = settings[0];
+  const cap = orderCapFor(env),
+    sold = cap.kind === "cap" ? await soldOrders(env) : 0,
+    soldOut = cap.kind === "invalid" || (cap.kind === "cap" && sold >= cap.n);
   const fresh =
     !!s?.gateway_last_seen &&
     Date.now() - new Date(s.gateway_last_seen).getTime() < 45_000;
@@ -137,7 +169,11 @@ app.get("/api/catalog", async (c) => {
     ["DISPATCHING", "PRINTING"].includes(s?.current_status || "");
   const availability = s?.paused
     ? "operator_paused"
-    : !fresh
+    : cap.kind === "invalid"
+      ? "misconfigured"
+      : soldOut
+        ? "sold_out"
+        : !fresh
       ? "gateway_offline"
       : orphaned
         ? "batch_needs_review"
@@ -160,6 +196,9 @@ app.get("/api/catalog", async (c) => {
     network,
     payTo: env.SELLER_ADDRESS,
     pending: Number(paid[0]?.count || 0),
+    maxOrders: cap.kind === "cap" ? cap.n : null,
+    remaining: cap.kind === "cap" ? Math.max(0, cap.n - sold) : null,
+    soldOut,
   });
 });
 app.post("/api/orders", async (c) => {
@@ -170,6 +209,9 @@ app.post("/api/orders", async (c) => {
     return error("Payment configuration incomplete", 503);
   if (b?.expectedNetwork !== undefined && b.expectedNetwork !== network)
     return error("The shop network changed. Refresh and check your wallet before creating an order.", 409);
+  const cap = orderCapFor(env);
+  if (cap.kind === "invalid")
+    return error("The order limit is misconfigured; contact the operator", 503);
   const name = clean(b?.name, 100),
     email = clean(b?.email, 160),
     line1 = clean(b?.addressLine1, 180),
@@ -193,10 +235,15 @@ app.post("/api/orders", async (c) => {
     price = env.PRICE_LOVELACE || "5000000";
   if (!/^\d+$/.test(price) || BigInt(price) < 1_000_000n)
     return error("Price configuration is invalid", 503);
+  // The cap is checked again before any payment is reserved; this only
+  // spares customers an order that could never be paid.
+  const guard = capGuardParams(cap);
   const rows = await query<{ id: string }>(
     env,
-    `INSERT INTO orders (id,access_hash,customer_name,email,address_line1,address_line2,postal_code,city,country,price_lovelace,network)
-    SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11 WHERE (SELECT NOT paused FROM shop_settings WHERE id=1)
+    `INSERT INTO orders (id,access_hash,customer_name,email,address_line1,address_line2,postal_code,city,country,price_lovelace,network,terms_acknowledged_at)
+    SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $12::boolean THEN now() END
+    WHERE (SELECT NOT paused FROM shop_settings WHERE id=1)
+      AND ($13::int = 0 OR ${SOLD_ORDERS_SQL} < $13::int)
     RETURNING id`,
     [
       id,
@@ -210,9 +257,19 @@ app.post("/api/orders", async (c) => {
       country,
       price,
       network,
+      b?.acknowledged === true,
+      guard.limit,
     ],
   );
-  if (!rows.length) return error("The shop is paused", 503);
+  if (!rows.length) {
+    const [shop] = await query<{ paused: boolean }>(
+      env,
+      "SELECT paused FROM shop_settings WHERE id=1",
+    );
+    return shop?.paused === false
+      ? error("All demo prints are claimed", 409)
+      : error("The shop is paused", 503);
+  }
   return c.json(
     { id, access, status: "AWAITING_PAYMENT", priceLovelace: price, network },
     201,
@@ -335,6 +392,7 @@ app.get("/api/admin/orders", async (c) => {
     Math.min(1000000, Math.trunc(Number(c.req.query("offset"))) || 0),
   );
   const filter = c.req.query("status") || "";
+  scheduleErasure(c, env);
   if (
     filter &&
     ![
@@ -353,7 +411,7 @@ app.get("/api/admin/orders", async (c) => {
   const [rows, batches, attempts, settings, totals] = await Promise.all([
     query(
       env,
-      `SELECT o.id,o.customer_name,o.email,o.address_line1,o.address_line2,o.postal_code,o.city,o.country,o.status,o.network,o.price_lovelace,o.tx_hash,o.batch_id,o.created_at,
+      `SELECT o.id,o.customer_name,o.email,o.address_line1,o.address_line2,o.postal_code,o.city,o.country,o.status,o.network,o.price_lovelace,o.tx_hash,o.batch_id,o.created_at,o.personal_data_erased_at,
     b.status AS batch_status, p.tx_hash AS signed_tx_hash FROM orders o LEFT JOIN print_batches b ON b.id=o.batch_id LEFT JOIN payment_attempts p ON p.order_id=o.id
     WHERE o.batch_id=(SELECT current_batch_id FROM shop_settings WHERE id=1)
        OR o.id IN (SELECT id FROM orders WHERE ($3='' OR status=$3 OR ($3='PAYMENT_REQUIRED_WITH_TX' AND status='AWAITING_PAYMENT' AND EXISTS (SELECT 1 FROM payment_attempts filter_attempt WHERE filter_attempt.order_id=orders.id AND filter_attempt.tx_hash IS NOT NULL AND filter_attempt.tx_hash<>''))) AND ($1='' OR id::text=$1 OR email ILIKE '%' || $1 || '%' OR customer_name ILIKE '%' || $1 || '%' OR tx_hash ILIKE '%' || $1 || '%' OR EXISTS (SELECT 1 FROM payment_attempts search_attempt WHERE search_attempt.order_id=orders.id AND search_attempt.tx_hash ILIKE '%' || $1 || '%'))
@@ -397,8 +455,16 @@ app.get("/api/admin/orders", async (c) => {
         [settings[0].current_batch_id],
       )
     : [];
+  const cap = orderCapFor(env),
+    sold = await soldOrders(env);
   return c.json({
     orders: rows,
+    orderCap: {
+      maxOrders: cap.kind === "cap" ? cap.n : null,
+      valid: cap.kind !== "invalid",
+      sold,
+      oversold: cap.kind === "cap" ? Math.max(0, sold - cap.n) : 0,
+    },
     totals: Object.fromEntries(totals.map((r) => [r.status, r.count])),
     paymentRequiredWithTxCount: totals.find((r) => r.status === "AWAITING_PAYMENT")?.signed_count || 0,
     batches,
@@ -542,7 +608,7 @@ app.post("/api/admin/orders/:id/status", async (c) => {
     env,
     `WITH moved AS (
     UPDATE orders SET status=$2,updated_at=now() WHERE id=$1 AND
-      ((status IN ('PRINTED','SHIPPED') AND $2='NEEDS_REVIEW') OR (status IN ('PRINTED','NEEDS_REVIEW','PAID') AND $2='REFUNDED') OR (status IN ('PRINTED','NEEDS_REVIEW') AND $2='SHIPPED') OR (status='NEEDS_REVIEW' AND $2='PRINTED'))
+      ((status IN ('PRINTED','SHIPPED') AND $2='NEEDS_REVIEW') OR (status IN ('PRINTED','NEEDS_REVIEW','PAID') AND $2='REFUNDED') OR (status IN ('PRINTED','NEEDS_REVIEW') AND $2='SHIPPED') OR (status='NEEDS_REVIEW' AND $2='PRINTED' AND personal_data_erased_at IS NULL))
     RETURNING id
   ), recorded AS (
     INSERT INTO order_events(order_id,kind) SELECT id,$2 FROM moved RETURNING order_id
@@ -569,6 +635,7 @@ app.post("/api/admin/orders/:id/requeue", async (c) => {
     FROM print_batches AS b
     WHERE o.id=$1 AND o.status='NEEDS_REVIEW' AND o.batch_id=b.id
       AND b.status IN ('NEEDS_REVIEW','PRINTED') AND o.tx_hash IS NOT NULL
+      AND o.personal_data_erased_at IS NULL
     RETURNING o.id,b.id AS previous_batch
   ), recorded AS (
     INSERT INTO order_events(order_id,kind,details)
@@ -577,12 +644,18 @@ app.post("/api/admin/orders/:id/requeue", async (c) => {
   ) SELECT order_id AS id FROM recorded`,
     [c.req.param("id")],
   );
-  return rows.length
-    ? c.json({ ok: true })
-    : error(
-        "Order is not eligible for reprint; review its batch and payment first",
-        409,
-      );
+  if (rows.length) return c.json({ ok: true });
+  const [erased] = await query(
+    env,
+    "SELECT 1 FROM orders WHERE id=$1 AND personal_data_erased_at IS NOT NULL",
+    [c.req.param("id")],
+  );
+  return error(
+    erased
+      ? "Delivery data was erased after the retention period; this order cannot be reprinted"
+      : "Order is not eligible for reprint; review its batch and payment first",
+    409,
+  );
 });
 
 app.post("/api/gateway/heartbeat", async (c) => {
@@ -619,6 +692,7 @@ app.post("/api/gateway/heartbeat", async (c) => {
     "UPDATE shop_settings SET gateway_last_seen=now(),gateway_armed=$1,gateway_active=$2,gateway_operational=$3,printer_ready=$4,printer_state=$5,available_batch_sizes=$6 WHERE id=1",
     [b.armed, b.active, b.operational, b.printerReady, b.printerState, sizes],
   );
+  scheduleErasure(c, env);
   return c.json({ ok: true });
 });
 app.get("/api/gateway/next", async (c) => {

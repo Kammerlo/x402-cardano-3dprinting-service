@@ -28,6 +28,12 @@ Maintain encrypted daily Postgres backups and point-in-time recovery where avail
 
 Serve `/admin` and `/api/admin/*` through the same HTTPS origin. Set `FRONTEND_ORIGIN` accordingly. Both access keys must be independent random 64-character hex strings. Keep `ADMIN_ALLOW_BEARER` unset. Local HTTP at localhost only requires `ADMIN_ALLOW_INSECURE_LOCALHOST=true`. See [security](SECURITY.md) for cookie, CSRF, edge/MFA and proxy configuration.
 
+## Order limit and personal data
+
+The admin dashboard shows the order limit as *sold of MAX_ORDERS* when one is set. *Oversold* orders were paid while the limit was being reached. Ship or refund them; marking an order refunded frees its slot. A red banner means `MAX_ORDERS` is invalid and all new orders and payments are refused. Customers refused at the limit see that no payment was taken; their order shows a `SOLD_OUT_REFUSED` event with the transaction hash.
+
+Personal data of shipped or refunded orders is erased after `PII_RETENTION_DAYS`. Erased orders show *Personal data erased* and cannot be reprinted. Answer access or erasure requests from customers using the contact on `/privacy`; on-chain transactions cannot be erased.
+
 ## Monitoring and launch checks
 
 Monitor `/api/health` for configuration and `/api/ready` for database reachability. Alert on repeated 5xx, stale gateway heartbeats, payment attempts awaiting reconciliation, NEEDS_REVIEW orders, queue age and disk capacity. Check `admin_audit` for privileged actions and incomplete audit entries. Never export session cookies, access keys or customer details into public logs.

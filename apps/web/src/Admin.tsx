@@ -23,6 +23,7 @@ type Order = {
   signed_tx_hash?: string | null;
   network: string;
   price_lovelace: string;
+  personal_data_erased_at?: string | null;
 };
 type Batch = {
   id: string;
@@ -35,6 +36,7 @@ type Dashboard = {
   batches: Batch[];
   totals: Record<string, number>;
   paymentRequiredWithTxCount: number;
+  orderCap?: { maxOrders: number | null; valid: boolean; sold: number; oversold: number };
   paused: boolean;
   currentBatch: Batch | null;
   currentBatchId: string | null;
@@ -84,7 +86,19 @@ async function request<T>(path: string, csrf = "", body?: object): Promise<T> {
     );
   return data;
 }
+const customerName = (order: Order) =>
+  order.personal_data_erased_at ? "Personal data erased" : order.customer_name;
 function Delivery({ order }: { order: Order }) {
+  if (order.personal_data_erased_at)
+    return (
+      <address className="delivery-address">
+        <strong>Personal data erased</strong>
+        <span>
+          Erased {new Date(order.personal_data_erased_at).toLocaleDateString()} after the retention period.
+        </span>
+        <span>{order.country === "DE" ? "Germany" : order.country}</span>
+      </address>
+    );
   return (
     <address className="delivery-address">
       <strong>{order.customer_name}</strong>
@@ -410,6 +424,18 @@ export function Admin({ onClose }: { onClose: () => void }) {
           {notice}
         </p>
       )}
+      {dashboard?.orderCap && !dashboard.orderCap.valid && (
+        <div className="error-message" role="alert">
+          MAX_ORDERS is invalid, so the shop refuses all new orders and payments. Set it to a whole number, or to 0 for unlimited.
+        </div>
+      )}
+      {dashboard?.orderCap?.maxOrders != null && (
+        <p className="desk-notice" role="status">
+          Order limit: {dashboard.orderCap.sold} of {dashboard.orderCap.maxOrders} paid orders.
+          {dashboard.orderCap.oversold > 0 &&
+            ` ${dashboard.orderCap.oversold} paid beyond the limit while settling: ship or refund them.`}
+        </p>
+      )}
       {!csrf ? (
         <form
           className="desk-login"
@@ -478,7 +504,7 @@ export function Admin({ onClose }: { onClose: () => void }) {
                 {onPlate.map((order) => (
                   <li key={order.id}>
                     <span>
-                      <strong>{order.customer_name}</strong>
+                      <strong>{customerName(order)}</strong>
                       <small>
                         #{order.id.slice(0, 8)} · {labels[order.status]}
                       </small>
@@ -619,7 +645,7 @@ export function Admin({ onClose }: { onClose: () => void }) {
                       {labels[order.status]}
                     </span>
                   </header>
-                  <strong>{order.customer_name}</strong>
+                  <strong>{customerName(order)}</strong>
                   <small>{new Date(order.created_at).toLocaleString()}</small>
                   <details open={tab === "PRINTED"}>
                     <summary>Delivery & contact</summary>
