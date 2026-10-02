@@ -10,6 +10,7 @@ export type Order = {
   signed_tx_hash?: string | null;
   batch_id: string | null;
   created_at: string;
+  personal_data_erased_at?: string | null;
 };
 export const networkFor = (env: Env): Network | null =>
   env.CARDANO_NETWORK === "cardano:mainnet" ||

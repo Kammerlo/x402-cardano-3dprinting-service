@@ -10,6 +10,13 @@ import { ExactCardanoScheme } from "@x402/cardano/exact/server";
 import { query } from "./db";
 import { reconcileRecordedPayment } from "./chainPayment";
 import {
+  SOLD_ORDERS_SQL,
+  capGuardParams,
+  orderCapFor,
+  soldOrders,
+} from "./orderCap";
+import { paymentWindowHours } from "./privacy";
+import {
   type Env,
   type Order,
   networkFor,
@@ -49,6 +56,24 @@ async function recoverOnChain(
   }
 }
 
+type Refusal = "SOLD_OUT" | "ORDER_CLOSED";
+
+// Only for outcomes proven to precede any broadcast: the browser treats this
+// header as final and releases the signed payment it kept for recovery.
+function refused(reason: Refusal, signed: boolean) {
+  const response = error(
+    (reason === "SOLD_OUT"
+      ? "All demo prints are claimed."
+      : "This order is closed and can no longer be paid.") +
+      (signed
+        ? " Your signed transaction was not submitted. No payment was taken."
+        : " No payment was requested."),
+    409,
+  );
+  response.headers.set("X-Payment-Refused", reason);
+  return response;
+}
+
 function withChainStatus(response: Response, status: string): Response {
   const headers = new Headers(response.headers);
   headers.set("X-Payment-Chain-Status", status);
@@ -70,6 +95,22 @@ export async function processPayment(
     !sellerIsValid(env, network)
   )
     return error("Payment configuration changed; contact the operator", 503);
+  const cap = orderCapFor(env),
+    windowHours = paymentWindowHours(env);
+  // Refuse new offers before the wallet is asked to sign anything. An order
+  // that already holds a signed transaction keeps today's behaviour, so its
+  // customer is never told "no payment" while that transaction may be on-chain.
+  if (!signature && !o.signed_tx_hash) {
+    if (cap.kind === "invalid")
+      return error("The order limit is misconfigured. No payment was requested; contact the operator.", 503);
+    if (
+      o.personal_data_erased_at ||
+      Date.now() - new Date(o.created_at).getTime() > windowHours * 3_600_000
+    )
+      return refused("ORDER_CLOSED", false);
+    if (cap.kind === "cap" && (await soldOrders(env)) >= cap.n)
+      return refused("SOLD_OUT", false);
+  }
   let signedHash: string | undefined;
   if (signature) {
     if (signature.length > 64_000)
@@ -92,17 +133,45 @@ export async function processPayment(
       return error("Invalid payment signature", 400);
     }
     // Reserve exactly one signed transaction for this order before the facilitator can broadcast.
+    // The order cap and erasure only block *new* reservations; an existing
+    // reservation always proceeds because it may already be on-chain.
+    // The order row is locked unconditionally, so a concurrent reservation of
+    // the same order commits before the checks below run and is seen by them.
+    // The lock does NOT protect against erasure: payments close windowHours
+    // after creation, 12 hours before an unpaid order becomes eligible for
+    // erasure, and that time gap alone keeps the two from overlapping.
+    const guard = capGuardParams(cap);
     await query(
       env,
-      `INSERT INTO payment_attempts(id,order_id,tx_hash,signed_payload) VALUES($1,$2,$3,$4)
+      `WITH locked AS (
+        SELECT id,personal_data_erased_at,created_at FROM orders WHERE id=$2 FOR UPDATE
+      )
+      INSERT INTO payment_attempts(id,order_id,tx_hash,signed_payload)
+      SELECT $1,locked.id,$3,$4 FROM locked
+      -- One CASE over the locked row: plain AND-ed parameter checks would be
+      -- hoisted into a one-time filter and skip the lock when they are false.
+      WHERE CASE WHEN locked.personal_data_erased_at IS NOT NULL
+          OR locked.created_at <= now()-make_interval(hours => $7::int) THEN false
+        ELSE NOT $6::boolean AND ($5::int = 0 OR ${SOLD_ORDERS_SQL} < $5::int) END
       ON CONFLICT DO NOTHING`,
-      [crypto.randomUUID(), id, signedHash, signature],
+      [crypto.randomUUID(), id, signedHash, signature, guard.limit, guard.closed, windowHours],
     );
     const attempts = await query<{ tx_hash: string }>(
       env,
       "SELECT tx_hash FROM payment_attempts WHERE order_id=$1",
       [id],
     );
+    if (!attempts.length) {
+      const reason = await refusalFor(env, id, signedHash, guard, windowHours);
+      if (reason) {
+        await query(
+          env,
+          "INSERT INTO order_events(order_id,kind,details) VALUES($1,$2,jsonb_build_object('transaction',$3::text))",
+          [id, reason === "SOLD_OUT" ? "SOLD_OUT_REFUSED" : "CLOSED_ORDER_REFUSED", signedHash],
+        ).catch((e) => console.error("refusal event failed", id, e));
+        return refused(reason, true);
+      }
+    }
     if (attempts.length !== 1 || attempts[0].tx_hash !== signedHash)
       return error(
         "Another signed payment is already attached to this order; reconcile it first",
@@ -244,4 +313,26 @@ export async function processPayment(
         [id, lease],
       );
   }
+}
+
+// A missing reservation is a refusal only when this transaction is reserved
+// nowhere: a hash held by another order may already be broadcast.
+async function refusalFor(
+  env: Env,
+  id: string,
+  signedHash: string,
+  guard: { limit: number; closed: boolean },
+  windowHours: number,
+): Promise<Refusal | null> {
+  const [state] = await query<{ elsewhere: boolean; erased: boolean; sold_out: boolean }>(
+    env,
+    `SELECT EXISTS (SELECT 1 FROM payment_attempts WHERE tx_hash=$2) AS elsewhere,
+      EXISTS (SELECT 1 FROM orders WHERE id=$1 AND (personal_data_erased_at IS NOT NULL
+        OR created_at <= now()-make_interval(hours => $5::int))) AS erased,
+      ($4::boolean OR ($3::int <> 0 AND ${SOLD_ORDERS_SQL} >= $3::int)) AS sold_out`,
+    [id, signedHash, guard.limit, guard.closed, windowHours],
+  );
+  if (!state || state.elsewhere) return null;
+  if (state.erased) return "ORDER_CLOSED";
+  return state.sold_out ? "SOLD_OUT" : null;
 }

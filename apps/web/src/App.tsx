@@ -10,6 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { Admin } from "./Admin";
+import { Legal, legalPageFor, type LegalPage } from "./Legal";
 import { ProtocolTrace } from "./ProtocolTrace";
 import { releaseResolvedPayment } from "./paymentRecovery";
 const ModelScene = lazy(() =>
@@ -35,6 +36,10 @@ type Catalog = {
   network: CardanoNetwork;
   payTo: string;
   pending: number;
+  availability?: string;
+  soldOut?: boolean;
+  maxOrders?: number | null;
+  remaining?: number | null;
 };
 const API = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
 const request = async (path: string, init?: RequestInit) => {
@@ -83,6 +88,24 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [showAdmin, setShowAdmin] = useState(location.pathname === "/admin");
+  const [legalPage, setLegalPage] = useState<LegalPage | null>(legalPageFor(location.pathname));
+  const [acknowledged, setAcknowledged] = useState(false);
+  useEffect(() => {
+    // Keep the view in step with the URL when the browser's Back/Forward is used.
+    const sync = () => {
+      setShowAdmin(location.pathname === "/admin");
+      setLegalPage(legalPageFor(location.pathname));
+    };
+    addEventListener("popstate", sync);
+    return () => removeEventListener("popstate", sync);
+  }, []);
+  const openLegal = (page: LegalPage) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    history.pushState({}, "", `/${page}`);
+    setShowAdmin(false);
+    setLegalPage(page);
+    setMenu(false);
+  };
   const [menu, setMenu] = useState(false);
   const [walletName, setWalletName] = useState("");
   const [wallets, setWallets] = useState<string[]>([]);
@@ -150,7 +173,7 @@ export default function App() {
       const created = await request("/api/orders", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...body, productId: "proof-token", expectedNetwork: catalog.network }),
+        body: JSON.stringify({ ...body, acknowledged: body.acknowledged === "on", productId: "proof-token", expectedNetwork: catalog.network }),
       });
       setOrder(created);
       document
@@ -338,6 +361,9 @@ export default function App() {
   };
   const checkoutNetwork = order?.network ?? catalog?.network;
   const isTestNetwork = !!checkoutNetwork && checkoutNetwork !== "cardano:mainnet";
+  const misconfigured = catalog?.availability === "misconfigured";
+  const soldOut = !!catalog?.soldOut && !misconfigured;
+  const ordersClosed = !catalog || catalog.paused || !!catalog.soldOut;
   return (
     <div className="app">
       <header className="nav shell">
@@ -366,6 +392,7 @@ export default function App() {
             onClick={(e) => {
               e.preventDefault();
               history.pushState({}, "", "/admin");
+              setLegalPage(null);
               setShowAdmin(true);
               setMenu(false);
             }}
@@ -389,6 +416,14 @@ export default function App() {
           onClose={() => {
             history.pushState({}, "", "/");
             setShowAdmin(false);
+          }}
+        />
+      ) : legalPage ? (
+        <Legal
+          page={legalPage}
+          onClose={() => {
+            history.pushState({}, "", "/");
+            setLegalPage(null);
           }}
         />
       ) : (
@@ -418,6 +453,10 @@ export default function App() {
                   <p>
                     Send ADA over the internet. Watch an actual 3D printer turn
                     a digital handshake into something you can hold.
+                  </p>
+                  <p className="demo-note">
+                    <strong>THIS IS A DEMO.</strong> The printed token is free.
+                    Your ADA payment covers shipping and handling only.
                   </p>
                   <a href="#checkout" className="primary">
                     MAKE IT REAL <ArrowDownRight size={22} />
@@ -566,7 +605,11 @@ export default function App() {
                         {catalog
                           ? catalog.paused
                             ? "● ORDERS PAUSED"
-                            : "● ORDERS OPEN"
+                            : misconfigured
+                              ? "● ORDERS UNAVAILABLE"
+                              : soldOut
+                                ? "● ALL PRINTS CLAIMED"
+                                : "● ORDERS OPEN"
                           : "CHECKING SHOP"}
                       </span>
                     </div>
@@ -582,23 +625,42 @@ export default function App() {
                         New orders are temporarily paused.
                       </div>
                     )}
+                    {!catalog?.paused && soldOut && (
+                      <div className="availability-note" role="status">
+                        All demo prints are claimed. Thank you for the interest; no new orders are accepted.
+                      </div>
+                    )}
+                    {!catalog?.paused && misconfigured && (
+                      <div className="availability-note" role="status">
+                        Ordering is unavailable while the operator fixes the shop configuration.
+                      </div>
+                    )}
+                    {!catalog?.paused && !catalog?.soldOut && typeof catalog?.remaining === "number" && (
+                      <div className="availability-note" role="status">
+                        {catalog.remaining} demo {catalog.remaining === 1 ? "print" : "prints"} left.
+                      </div>
+                    )}
                     <div className="product-row">
                       <div className="product-symbol">✳</div>
                       <div>
                         <strong>Proof of Print</strong>
-                        <small>3D printed token · quantity 1</small>
+                        <small>3D printed token · quantity 1 · demo giveaway</small>
                       </div>
-                      <b>₳ {ada(catalog?.product.priceLovelace)}</b>
+                      <b>FREE</b>
+                    </div>
+                    <div className="price-row">
+                      <span>Shipping + handling</span>
+                      <span>₳ {ada(catalog?.product.priceLovelace)}</span>
                     </div>
                     <div className="divider" />
                     <div className="price-row">
-                      <span>Print + handling</span>
+                      <span>Total payment (shipping only)</span>
                       <strong>₳ {ada(catalog?.product.priceLovelace)}</strong>
                     </div>
                     <p className="fineprint">
                       {isTestNetwork
                         ? "Delivery details are collected to test checkout only. No shipment is provided for test-network orders."
-                        : "Enter your complete delivery address, including country. Shipping is included in the displayed price; international delivery times may vary."}
+                        : "This is a demo: the token itself is free, and your payment covers shipping and handling only. Enter your complete delivery address, including country; international delivery times may vary."}
                     </p>
                     {saved.length > 0 && (
                       <div className="availability-note" role="status">
@@ -703,9 +765,23 @@ export default function App() {
                             placeholder="e.g. Germany"
                           />
                         </label>
+                        <label className="acknowledge">
+                          <input
+                            type="checkbox"
+                            name="acknowledged"
+                            required
+                            checked={acknowledged}
+                            onChange={(event) => setAcknowledged(event.target.checked)}
+                          />
+                          <span>
+                            I have read the{" "}
+                            <a href="/privacy" onClick={openLegal("privacy")}>privacy notice</a>{" "}
+                            and understand that this is a demo: the token is free and I pay only for shipping and handling.
+                          </span>
+                        </label>
                         <button
                           className="primary form-submit"
-                          disabled={busy || !catalog || catalog.paused || !selectedWallet}
+                          disabled={busy || ordersClosed || !selectedWallet || !acknowledged}
                         >
                           {busy ? "PREPARING…" : "CONTINUE TO PAYMENT"}{" "}
                           <ArrowRight size={18} />
@@ -805,13 +881,17 @@ export default function App() {
                               ? "PROCESSING…"
                               : sessionStorage.getItem("print-prepared")
                                 ? "CHECK PAYMENT STATUS"
-                                : "SIGN & PAY ON CARDANO"}{" "}
+                                : isTestNetwork
+                                  ? "SIGN & PAY ON CARDANO"
+                                  : "ORDER WITH OBLIGATION TO PAY · SIGN"}{" "}
                             <ArrowRight size={18} />
                           </button>
                         )}
                         {order.paymentFailed && (
                           <div className="availability-note" role="status">
-                            Payment was rejected. You can start a new order and try again.
+                            {catalog?.soldOut
+                              ? "No payment was taken. All demo prints are claimed, so no new order can be started."
+                              : "No payment was taken. You can start a new order and try again."}
                           </div>
                         )}
                         {sessionStorage.getItem("print-prepared") && (
@@ -820,7 +900,7 @@ export default function App() {
                             <p>Your order and any signed payment received by our server remain saved. Use the hash above to check again later. Please do not sign or pay again while this payment is unresolved.</p>
                           </div>
                         )}
-                        <button className="checkout-secondary checkout-new-order" type="button" onClick={reset} disabled={busy}>
+                        <button className="checkout-secondary checkout-new-order" type="button" onClick={reset} disabled={busy || (!!order.paymentFailed && !!catalog?.soldOut)}>
                           {order.paymentFailed ? "Try again with a new order" : "Start another order"}
                         </button>
                       </div>
@@ -895,7 +975,17 @@ export default function App() {
                   <p>
                     {isTestNetwork
                       ? `No. This checkout runs on Cardano ${checkoutNetwork?.split(":")[1] || "testnet"}. Test ADA has no monetary value, and no shipment is provided. Confirm the test amount in your wallet before signing.`
-                      : "On mainnet, yes. Confirm the ADA amount in your wallet before signing. This creates a real purchase."}
+                      : "It is a demo with a real payment. The token is free; on mainnet your ADA payment is a real, binding payment for shipping and handling. Confirm the amount in your wallet before signing."}
+                  </p>
+                </details>
+                <details>
+                  <summary>
+                    Why do I pay if the token is free? <ChevronDown size={18} />
+                  </summary>
+                  <p>
+                    The printed token is a free demo giveaway. The ADA amount
+                    covers only postage, packaging and handling, and it lets you
+                    experience a real x402 payment end to end.
                   </p>
                 </details>
                 <details>
@@ -924,9 +1014,11 @@ export default function App() {
                     What happens to my address? <ChevronDown size={18} />
                   </summary>
                   <p>
-                    Your delivery details are stored in the order database for
-                    fulfillment. They are never placed on chain or sent to the
-                    printer. The public source code contains no customer data.
+                    Your delivery details are stored only to ship your token and
+                    are erased automatically after the retention period. They are
+                    never placed on chain or sent to the printer. Your transaction
+                    and wallet address are public on Cardano. Details are in
+                    the <a href="/privacy" onClick={openLegal("privacy")}>privacy notice</a>.
                   </p>
                 </details>
               </div>
@@ -953,7 +1045,12 @@ export default function App() {
                   SOURCE ON GITHUB ↗
                 </a>
               </div>
-              <div className="footer-end">CARDANO MAINNET · 2026</div>
+              <div>
+                <span>LEGAL</span>
+                <a href="/privacy" onClick={openLegal("privacy")}>PRIVACY NOTICE</a>
+                <a href="/imprint" onClick={openLegal("imprint")}>IMPRINT</a>
+              </div>
+              <div className="footer-end">A DEMO · TOKEN FREE, SHIPPING PAID · 2026</div>
             </div>
           </footer>
         </>
