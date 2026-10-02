@@ -12,7 +12,7 @@ The facilitator must implement `/supported`, `/verify` and `/settle`. Check `/su
 
 ## 1. Apply Neon migrations
 
-Back up an existing production database first. From the repository root, use a Neon connection string with SSL. Apply every SQL file in numeric order, **001 through 010**. For example:
+Back up an existing production database first. From the repository root, use a Neon connection string with SSL. Apply every SQL file in numeric order, **001 through 011**. For example:
 
 ```bash
 export DATABASE_URL='postgresql://USER:PASSWORD@HOST/neondb?sslmode=require'
@@ -22,7 +22,7 @@ done
 unset DATABASE_URL
 ```
 
-Install `psql` locally, or run each file in Neon's SQL editor in the same order. Existing installations should apply only unapplied migrations and verify their backups before upgrading. Migrations 009 and 010 add chain payment checks and the last-check diagnostic cache. Apply migrations before deploying a newer API. Do not share the connection string or paste it in a shell command that will be committed.
+Install `psql` locally, or run each file in Neon's SQL editor in the same order. Existing installations should apply only unapplied migrations and verify their backups before upgrading. Migrations 009 and 010 add chain payment checks and the last-check diagnostic cache. Migration 011 adds personal-data erasure and checkout acknowledgement timestamps. Apply migrations before deploying a newer API. Do not share the connection string or paste it in a shell command that will be committed.
 
 ## 2. Build and deploy the Worker
 
@@ -77,5 +77,15 @@ Checkout accepts a free-text country or territory and international postal codes
 3. With the printer offline, verify payment still settles into a waiting order. Restore the gateway, empty the plate, start a batch in admin, inspect the actual print, then mark it sent. Test a restart mid-print and resolve ambiguous status manually.
 4. Restore a database backup into a separate database and reconcile its state against the chain and physical printer. Monitor 5xx, stale heartbeat, payment attempts needing review, queue age and disk usage. See [operations](OPERATIONS.md) and [security](SECURITY.md).
 5. Only after the above, switch **both** the Worker and web build to mainnet credentials, repeat a low-value real purchase, and publish your shop's terms, shipping/refund policy, privacy/contact details and applicable business notices. A payment success does not imply a physically successful print.
+
+## 5. Legal pages, order limit and data retention
+
+The storefront serves `/privacy` (GDPR Art. 13 notice) and `/imprint` (§ 5 DDG) from Worker variables. Set at least `OPERATOR_NAME`, `OPERATOR_ADDRESS` (use `\n` for line breaks) and `OPERATOR_EMAIL`; until then both pages show a "not configured" warning. Optional: `OPERATOR_PHONE`, `OPERATOR_VAT_ID`, `OPERATOR_REPRESENTATIVE`, `OPERATOR_REGISTER` and `PRIVACY_SUPERVISORY_AUTHORITY`. The texts are templates, not legal advice. Review them, including the listed processors (Cloudflare, Neon, facilitator, Blockfrost, carrier), for your own deployment.
+
+`MAX_ORDERS` caps the total number of paid, non-refunded orders. Empty or `0` means unlimited; any other non-integer closes checkout and refuses new payments (fail closed). The cap is checked before an offer is issued and before a signed payment is reserved, never after: a payment that may already be on-chain is always honoured. A few payments settling at the moment the cap is reached can therefore exceed it; admin shows them as *oversold* so you can ship or refund them. Refunded orders free their slot.
+
+`PII_RETENTION_DAYS` (1–3650, default 90; invalid values fall back to 90) controls erasure. Name, email and address are blanked that many days after an order is shipped or refunded, and for unpaid orders without a reserved payment that many days after creation. Transaction hashes, amounts, country, status and events are kept. Erasure runs at most every 10 minutes, triggered by gateway heartbeats and admin views. Unpaid orders stop accepting payment 12 hours before they become eligible for erasure, so a payment can never race it. An unpaid order whose signed payment was submitted but never confirmed is **not** erased automatically, because that payment may still arrive on-chain; resolve it, then erase it on request. An erased order can no longer be paid, reprinted or returned to the shipping list. If tax or commercial law requires you to keep booking records longer, export them before they are erased.
+
+**Not covered:** the storefront has no withdrawal notice (Widerrufsbelehrung) or terms of service. Charging ADA for shipping is a paid distance contract with consumers, so publish both before selling to consumers on mainnet.
 
 Changing a running shop's network leaves older unpaid orders ineligible for payment. Paid orders retain their recorded network. Do not mix networks casually, and do not attempt to resolve uncertain payments by creating fresh transactions.

@@ -321,6 +321,22 @@ export async function sendPayment(
     },
   });
   const receiptHeader = response.headers.get("PAYMENT-RESPONSE");
+  // The API sends X-Payment-Refused only after proving the signed transaction
+  // was never reserved, so it cannot have been broadcast by the shop.
+  const refusal = response.headers.get("X-Payment-Refused");
+  if (
+    response.status === 409 &&
+    !receiptHeader &&
+    (refusal === "SOLD_OUT" || refusal === "ORDER_CLOSED")
+  ) {
+    const message = `${refusal === "SOLD_OUT" ? "All demo prints are claimed." : "This order is closed and can no longer be paid."} Your signed transaction was not submitted. No payment was taken.`;
+    onStep({
+      id: "failed",
+      title: "Payment refused before submission",
+      detail: { reason: refusal, transaction },
+    });
+    return { status: "failed", message };
+  }
   let receipt;
   try {
     receipt = receiptHeader
