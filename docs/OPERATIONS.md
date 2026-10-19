@@ -30,7 +30,7 @@ Serve `/admin` and `/api/admin/*` through the same HTTPS origin. Set `FRONTEND_O
 
 ## Order limit and personal data
 
-The admin dashboard shows the order limit as *sold of MAX_ORDERS* when one is set. *Oversold* orders were paid while the limit was being reached. Ship or refund them; marking an order refunded frees its slot. A red banner means `MAX_ORDERS` is invalid and all new orders and payments are refused. Customers refused at the limit see that no payment was taken; their order shows a `SOLD_OUT_REFUSED` event with the transaction hash.
+Set or change the order limit in admin under *Shop settings & history* (empty for unlimited); it applies immediately. The dashboard shows *sold of limit* when one is set. *Oversold* orders were paid while the limit was being reached. Ship or refund them; marking an order refunded frees its slot. Lowering the limit to the sold count closes checkout at once. Customers refused at the limit see that no payment was taken; their order shows a `SOLD_OUT_REFUSED` event with the transaction hash.
 
 Personal data of shipped or refunded orders is erased after `PII_RETENTION_DAYS`. Erased orders show *Personal data erased* and cannot be reprinted. Answer access or erasure requests from customers using the contact on `/privacy`; on-chain transactions cannot be erased.
 

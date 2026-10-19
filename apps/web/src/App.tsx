@@ -361,8 +361,7 @@ export default function App() {
   };
   const checkoutNetwork = order?.network ?? catalog?.network;
   const isTestNetwork = !!checkoutNetwork && checkoutNetwork !== "cardano:mainnet";
-  const misconfigured = catalog?.availability === "misconfigured";
-  const soldOut = !!catalog?.soldOut && !misconfigured;
+  const soldOut = !!catalog?.soldOut;
   const ordersClosed = !catalog || catalog.paused || !!catalog.soldOut;
   return (
     <div className="app">
@@ -605,9 +604,7 @@ export default function App() {
                         {catalog
                           ? catalog.paused
                             ? "● ORDERS PAUSED"
-                            : misconfigured
-                              ? "● ORDERS UNAVAILABLE"
-                              : soldOut
+                            : soldOut
                                 ? "● ALL PRINTS CLAIMED"
                                 : "● ORDERS OPEN"
                           : "CHECKING SHOP"}
@@ -628,11 +625,6 @@ export default function App() {
                     {!catalog?.paused && soldOut && (
                       <div className="availability-note" role="status">
                         All demo prints are claimed. Thank you for the interest; no new orders are accepted.
-                      </div>
-                    )}
-                    {!catalog?.paused && misconfigured && (
-                      <div className="availability-note" role="status">
-                        Ordering is unavailable while the operator fixes the shop configuration.
                       </div>
                     )}
                     {!catalog?.paused && !catalog?.soldOut && typeof catalog?.remaining === "number" && (
@@ -1048,7 +1040,6 @@ export default function App() {
               <div>
                 <span>LEGAL</span>
                 <a href="/privacy" onClick={openLegal("privacy")}>PRIVACY NOTICE</a>
-                <a href="/imprint" onClick={openLegal("imprint")}>IMPRINT</a>
               </div>
               <div className="footer-end">A DEMO · TOKEN FREE, SHIPPING PAID · 2026</div>
             </div>

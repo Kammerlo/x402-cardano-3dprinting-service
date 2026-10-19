@@ -104,7 +104,7 @@ For Cloudflare, Neon and a gateway-only server, follow the [deployment guide](do
 
 ## Demo terms, privacy and order limit
 
-This shop is a **demo**: the printed token is free and the ADA payment covers shipping and handling only. The storefront says so in the hero, price breakdown, checkout and FAQ, and customers must tick an acknowledgement before ordering. `/privacy` and `/imprint` are rendered from `OPERATOR_*` variables. Fonts are self-hosted and the site sets no cookies and uses no tracking. Delivery data is erased automatically after `PII_RETENTION_DAYS` (default 90), and `MAX_ORDERS` caps the number of paid orders. Details and the remaining legal gaps (withdrawal notice, terms, legal review) are in [deployment](docs/DEPLOYMENT.md#5-legal-pages-order-limit-and-data-retention).
+This shop is a **demo**: the printed token is free and the ADA payment covers shipping and handling only. The storefront says so in the hero, price breakdown, checkout and FAQ, and customers must tick an acknowledgement before ordering. `/privacy` is rendered from `OPERATOR_NAME`, `OPERATOR_ADDRESS` and `OPERATOR_EMAIL`. Fonts are self-hosted and the site sets no cookies and uses no tracking. Delivery data is erased automatically after `PII_RETENTION_DAYS` (default 90), and an order limit set in `/admin` caps the number of paid orders. Details and the remaining legal gaps (withdrawal notice, terms, legal review) are in [deployment](docs/DEPLOYMENT.md#5-legal-pages-order-limit-and-data-retention).
 
 ## Before accepting real orders
 

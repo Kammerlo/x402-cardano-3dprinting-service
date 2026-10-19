@@ -36,7 +36,7 @@ type Dashboard = {
   batches: Batch[];
   totals: Record<string, number>;
   paymentRequiredWithTxCount: number;
-  orderCap?: { maxOrders: number | null; valid: boolean; sold: number; oversold: number };
+  orderCap?: { maxOrders: number | null; sold: number; oversold: number };
   paused: boolean;
   currentBatch: Batch | null;
   currentBatchId: string | null;
@@ -116,6 +116,7 @@ export function Admin({ onClose }: { onClose: () => void }) {
   const [credential, setCredential] = useState("");
   const [csrf, setCsrf] = useState("");
   const [dashboard, setDashboard] = useState<Dashboard>();
+  const [limitDraft, setLimitDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -219,8 +220,10 @@ export function Admin({ onClose }: { onClose: () => void }) {
         );
       }
       await refresh();
+      return true;
     } catch (cause) {
       handleError(cause);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -423,11 +426,6 @@ export function Admin({ onClose }: { onClose: () => void }) {
         <p className="desk-notice" role="status">
           {notice}
         </p>
-      )}
-      {dashboard?.orderCap && !dashboard.orderCap.valid && (
-        <div className="error-message" role="alert">
-          MAX_ORDERS is invalid, so the shop refuses all new orders and payments. Set it to a whole number, or to 0 for unlimited.
-        </div>
       )}
       {dashboard?.orderCap?.maxOrders != null && (
         <p className="desk-notice" role="status">
@@ -699,6 +697,38 @@ export function Admin({ onClose }: { onClose: () => void }) {
           </section>
           <details className="desk-settings">
             <summary>Shop settings & history</summary>
+            <form
+              className="desk-limit"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const raw = (limitDraft ?? String(dashboard.orderCap?.maxOrders ?? "")).trim();
+                void action("/api/admin/order-limit", {
+                  maxOrders: raw === "" ? null : Number(raw),
+                }).then((saved) => { if (saved) setLimitDraft(null); });
+              }}
+            >
+              <label>
+                Order limit <small>paid orders in total · empty for unlimited</small>
+                <input
+                  type="number"
+                  min={0}
+                  max={1000000}
+                  step={1}
+                  inputMode="numeric"
+                  placeholder="Unlimited"
+                  value={limitDraft ?? String(dashboard.orderCap?.maxOrders ?? "")}
+                  onChange={(event) => setLimitDraft(event.target.value)}
+                />
+              </label>
+              <button type="submit" disabled={busy || limitDraft === null}>
+                Save limit
+              </button>
+            </form>
+            <p>
+              {dashboard.orderCap?.maxOrders
+                ? `${dashboard.orderCap.sold} of ${dashboard.orderCap.maxOrders} paid orders. Checkout closes when the limit is reached; payments already in progress still complete.`
+                : `${dashboard.orderCap?.sold ?? 0} paid orders. No limit is set.`}
+            </p>
             <button
               disabled={busy}
               onClick={() =>

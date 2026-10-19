@@ -9,12 +9,7 @@ import { decodeCardanoTransaction } from "@x402/cardano";
 import { ExactCardanoScheme } from "@x402/cardano/exact/server";
 import { query } from "./db";
 import { reconcileRecordedPayment } from "./chainPayment";
-import {
-  SOLD_ORDERS_SQL,
-  capGuardParams,
-  orderCapFor,
-  soldOrders,
-} from "./orderCap";
+import { CAP_OPEN_SQL, capStatus } from "./orderCap";
 import { paymentWindowHours } from "./privacy";
 import {
   type Env,
@@ -95,21 +90,17 @@ export async function processPayment(
     !sellerIsValid(env, network)
   )
     return error("Payment configuration changed; contact the operator", 503);
-  const cap = orderCapFor(env),
-    windowHours = paymentWindowHours(env);
+  const windowHours = paymentWindowHours(env);
   // Refuse new offers before the wallet is asked to sign anything. An order
   // that already holds a signed transaction keeps today's behaviour, so its
   // customer is never told "no payment" while that transaction may be on-chain.
   if (!signature && !o.signed_tx_hash) {
-    if (cap.kind === "invalid")
-      return error("The order limit is misconfigured. No payment was requested; contact the operator.", 503);
     if (
       o.personal_data_erased_at ||
       Date.now() - new Date(o.created_at).getTime() > windowHours * 3_600_000
     )
       return refused("ORDER_CLOSED", false);
-    if (cap.kind === "cap" && (await soldOrders(env)) >= cap.n)
-      return refused("SOLD_OUT", false);
+    if ((await capStatus(env)).soldOut) return refused("SOLD_OUT", false);
   }
   let signedHash: string | undefined;
   if (signature) {
@@ -140,7 +131,6 @@ export async function processPayment(
     // The lock does NOT protect against erasure: payments close windowHours
     // after creation, 12 hours before an unpaid order becomes eligible for
     // erasure, and that time gap alone keeps the two from overlapping.
-    const guard = capGuardParams(cap);
     await query(
       env,
       `WITH locked AS (
@@ -148,13 +138,13 @@ export async function processPayment(
       )
       INSERT INTO payment_attempts(id,order_id,tx_hash,signed_payload)
       SELECT $1,locked.id,$3,$4 FROM locked
-      -- One CASE over the locked row: plain AND-ed parameter checks would be
-      -- hoisted into a one-time filter and skip the lock when they are false.
+      -- One CASE over the locked row: AND-ed checks that do not reference it
+      -- would be hoisted into a one-time filter and skip the lock when false.
       WHERE CASE WHEN locked.personal_data_erased_at IS NOT NULL
-          OR locked.created_at <= now()-make_interval(hours => $7::int) THEN false
-        ELSE NOT $6::boolean AND ($5::int = 0 OR ${SOLD_ORDERS_SQL} < $5::int) END
+          OR locked.created_at <= now()-make_interval(hours => $5::int) THEN false
+        ELSE ${CAP_OPEN_SQL} END
       ON CONFLICT DO NOTHING`,
-      [crypto.randomUUID(), id, signedHash, signature, guard.limit, guard.closed, windowHours],
+      [crypto.randomUUID(), id, signedHash, signature, windowHours],
     );
     const attempts = await query<{ tx_hash: string }>(
       env,
@@ -162,7 +152,7 @@ export async function processPayment(
       [id],
     );
     if (!attempts.length) {
-      const reason = await refusalFor(env, id, signedHash, guard, windowHours);
+      const reason = await refusalFor(env, id, signedHash, windowHours);
       if (reason) {
         await query(
           env,
@@ -321,16 +311,15 @@ async function refusalFor(
   env: Env,
   id: string,
   signedHash: string,
-  guard: { limit: number; closed: boolean },
   windowHours: number,
 ): Promise<Refusal | null> {
   const [state] = await query<{ elsewhere: boolean; erased: boolean; sold_out: boolean }>(
     env,
     `SELECT EXISTS (SELECT 1 FROM payment_attempts WHERE tx_hash=$2) AS elsewhere,
       EXISTS (SELECT 1 FROM orders WHERE id=$1 AND (personal_data_erased_at IS NOT NULL
-        OR created_at <= now()-make_interval(hours => $5::int))) AS erased,
-      ($4::boolean OR ($3::int <> 0 AND ${SOLD_ORDERS_SQL} >= $3::int)) AS sold_out`,
-    [id, signedHash, guard.limit, guard.closed, windowHours],
+        OR created_at <= now()-make_interval(hours => $3::int))) AS erased,
+      NOT ${CAP_OPEN_SQL} AS sold_out`,
+    [id, signedHash, windowHours],
   );
   if (!state || state.elsewhere) return null;
   if (state.erased) return "ORDER_CLOSED";

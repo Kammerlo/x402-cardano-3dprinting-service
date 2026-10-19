@@ -17,7 +17,7 @@ const tx = (fee) => Buffer.from(`84a300800180020${fee.toString(16)}a0f5f6`, 'hex
 const customer = (email) => ({ productId: 'proof-token', name: 'Privacy Customer', email,
   addressLine1: 'Street 1', postalCode: '10115', city: 'Berlin', country: 'DE' });
 
-async function withShop(extraEnv, run) {
+async function withShop(extraEnv, run, { maxOrders } = {}) {
   const schema = `privacy_${randomUUID().replaceAll('-', '')}`;
   const db = new pg.Client({ connectionString: process.env.TEST_DATABASE_URL });
   await db.connect();
@@ -61,7 +61,8 @@ async function withShop(extraEnv, run) {
     let requirements;
     const sign = async (order, transaction) => {
       if (!requirements) {
-        const response = await offer(order, { ...env, MAX_ORDERS: '' });
+        // Fetch the offer requirements before the order limit closes; every test does.
+        const response = await offer(order);
         assert.equal(response.status, 402);
         requirements = JSON.parse(Buffer.from(response.headers.get('PAYMENT-REQUIRED'), 'base64').toString());
       }
@@ -79,7 +80,9 @@ async function withShop(extraEnv, run) {
     };
     const catalog = async (environment = env) => (await call('/api/catalog', { environment })).json();
     const attempts = async (order) => (await db.query('SELECT tx_hash FROM payment_attempts WHERE order_id=$1', [order.id])).rows;
-    await run({ db, env, call, create, offer, pay, reserve, catalog, attempts, facilitator });
+    const setLimit = (value) => call('/api/admin/order-limit', { auth: env.ADMIN_TOKEN, body: { maxOrders: value } });
+    if (maxOrders !== undefined) assert.equal((await setLimit(maxOrders)).status, 200);
+    await run({ db, env, call, create, offer, pay, reserve, catalog, attempts, facilitator, setLimit });
   } finally {
     globalThis.fetch = originalFetch;
     await closeLocalPool();
@@ -107,7 +110,7 @@ test('records the checkout acknowledgement without requiring it', { skip }, () =
   assert.equal(await stamp(silent), null);
 }));
 
-test('enforces MAX_ORDERS before broadcast and honours every reserved payment', { skip }, () => withShop({ MAX_ORDERS: '1' }, async ({ db, env, call, create, offer, pay, reserve, catalog, attempts, facilitator }) => {
+test('enforces the order limit before broadcast and honours every reserved payment', { skip }, () => withShop({}, async ({ db, env, call, create, offer, pay, reserve, catalog, attempts, facilitator }) => {
   const paidFirst = await create('first@example.com');
   const late = await create('late@example.com');
   const reserved = await create('reserved@example.com');
@@ -155,35 +158,13 @@ test('enforces MAX_ORDERS before broadcast and honours every reserved payment', 
   assert.equal((await db.query('SELECT status FROM orders WHERE id=$1', [reserved.id])).rows[0].status, 'PAID');
 
   const admin = await (await call('/api/admin/orders', { auth: env.ADMIN_TOKEN })).json();
-  assert.deepEqual(admin.orderCap, { maxOrders: 1, valid: true, sold: 2, oversold: 1 });
+  assert.deepEqual(admin.orderCap, { maxOrders: 1, sold: 2, oversold: 1 });
 
   // Refunds free a slot.
   await db.query("UPDATE orders SET status='REFUNDED' WHERE id IN ($1,$2)", [paidFirst.id, reserved.id]);
   assert.equal((await catalog()).soldOut, false);
   await create('after-refund@example.com');
-}));
-
-test('an invalid MAX_ORDERS fails closed for new payments but not for reserved ones', { skip }, () => withShop({}, async ({ db, env, create, offer, pay, reserve, catalog, attempts, facilitator }) => {
-  const fresh = await create('fresh@example.com');
-  const reserved = await create('reserved@example.com');
-  await reserve(reserved, tx(5));
-  const broken = { ...env, MAX_ORDERS: '-5' };
-  assert.equal((await catalog(broken)).availability, 'misconfigured');
-
-  facilitator.calls = 0;
-  const refusedOffer = await offer(fresh, broken);
-  assert.equal(refusedOffer.status, 503);
-  assert.equal(refusedOffer.headers.get('X-Payment-Refused'), null);
-  const refused = await pay(fresh, tx(4), broken);
-  assert.equal(refused.status, 409);
-  assert.equal(refused.headers.get('X-Payment-Refused'), 'SOLD_OUT');
-  assert.deepEqual(await attempts(fresh), []);
-  assert.equal(facilitator.calls, 0);
-
-  const retried = await pay(reserved, tx(5), broken);
-  assert.equal(retried.status, 200, await retried.clone().text());
-  assert.equal((await db.query('SELECT status FROM orders WHERE id=$1', [reserved.id])).rows[0].status, 'PAID');
-}));
+}, { maxOrders: 1 }));
 
 test('erases only expired personal data and closes erased unpaid orders', { skip }, () => withShop({ PII_RETENTION_DAYS: '30' }, async ({ db, env, call, create, offer, pay, reserve, attempts, facilitator }) => {
   const make = async (label, status, ageDays, txHash = null) => {
@@ -253,15 +234,13 @@ test('erases only expired personal data and closes erased unpaid orders', { skip
   assert.equal(backToShipping.status, 409);
 }));
 
-for (const [label, cap] of [['a reached cap', '1'], ['an invalid cap', 'abc']])
-test(`a reservation still being written is never reported as refused under ${label}`, { skip }, () => withShop({ MAX_ORDERS: '1' }, async ({ db, env, create, pay, reserve, catalog, facilitator }) => {
+test('a reservation still being written is never reported as refused', { skip }, () => withShop({}, async ({ db, create, pay, reserve, catalog, facilitator }) => {
   const racing = await create('racing@example.com');
   const winner = await create('winner@example.com');
   await reserve(winner, tx(11)); // caches the offer requirements before the cap closes
   await db.query('DELETE FROM payment_attempts WHERE order_id=$1', [winner.id]);
   assert.equal((await pay(winner, tx(11))).status, 200);
   assert.equal((await catalog()).soldOut, true);
-  env.MAX_ORDERS = cap;
 
   // A concurrent request for the same signed transaction holds the order row
   // and has inserted its reservation, but has not committed yet.
@@ -279,4 +258,34 @@ test(`a reservation still being written is never reported as refused under ${lab
   assert.equal(response.headers.get('X-Payment-Refused'), null);
   assert.equal(response.status, 200, await response.clone().text());
   assert.ok(facilitator.calls > 0);
+}, { maxOrders: 1 }));
+
+test('admins set and validate the order limit, effective immediately', { skip }, () => withShop({}, async ({ env, call, create, pay, catalog, setLimit }) => {
+  const unauthenticated = await call('/api/admin/order-limit', { body: { maxOrders: 3 } });
+  assert.equal(unauthenticated.status, 401);
+  for (const bad of [-1, 1.5, '3', 1_000_001, true])
+    assert.equal((await setLimit(bad)).status, 400, JSON.stringify(bad));
+  const missing = await call('/api/admin/order-limit', { auth: env.ADMIN_TOKEN, body: {} });
+  assert.equal(missing.status, 400);
+
+  const saved = await setLimit(3);
+  assert.equal(saved.status, 200);
+  assert.deepEqual(await saved.json(), { maxOrders: 3 });
+  assert.equal((await catalog()).maxOrders, 3);
+  assert.equal((await catalog()).remaining, 3);
+
+  const first = await create('first@example.com');
+  assert.equal((await pay(first, tx(13))).status, 200);
+  // Lowering the limit to the sold count closes ordering without a restart.
+  assert.equal((await setLimit(1)).status, 200);
+  assert.equal((await catalog()).soldOut, true);
+  assert.equal((await call('/api/orders', { body: customer('closed@example.com') })).status, 409);
+
+  for (const unlimited of [null, 0]) {
+    assert.deepEqual(await (await setLimit(unlimited)).json(), { maxOrders: 0 });
+    const shop = await catalog();
+    assert.equal(shop.soldOut, false);
+    assert.equal(shop.maxOrders, null);
+  }
+  await create('reopened@example.com');
 }));

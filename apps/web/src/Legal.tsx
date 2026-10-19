@@ -1,26 +1,22 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 
-// Template texts for an EU (GDPR) / German (§ 5 DDG) operator. They are not
-// legal advice: the operator must review them for their own deployment.
+// Template privacy notice for an EU (GDPR) operator. It is not legal advice:
+// the operator must review it for their own deployment.
 type LegalInfo = {
   operator: {
     name: string;
     address: string;
     email: string;
-    phone: string;
-    vatId: string;
-    representative: string;
-    register: string;
   };
   supervisoryAuthority: string;
   retentionDays: number;
   network: string | null;
   configured: boolean;
 };
-export type LegalPage = "privacy" | "imprint";
+export type LegalPage = "privacy";
 export const legalPageFor = (path: string): LegalPage | null =>
-  path === "/privacy" ? "privacy" : path === "/imprint" ? "imprint" : null;
+  path === "/privacy" ? "privacy" : null;
 
 const API = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
 const LAST_UPDATED = "2026-10-02";
@@ -31,9 +27,7 @@ function Operator({ info }: { info: LegalInfo }) {
     <address className="legal-operator">
       {o.name && <strong>{o.name}</strong>}
       {o.address.split("\n").map((line, i) => <span key={i}>{line}</span>)}
-      {o.representative && <span>Represented by: {o.representative}</span>}
       {o.email && <span>Email: <a href={`mailto:${o.email}`}>{o.email}</a></span>}
-      {o.phone && <span>Phone: {o.phone}</span>}
     </address>
   );
 }
@@ -170,24 +164,6 @@ function Privacy({ info }: { info: LegalInfo }) {
   );
 }
 
-function Imprint({ info }: { info: LegalInfo }) {
-  const o = info.operator;
-  return (
-    <>
-      <h1>Imprint</h1>
-      <p className="legal-lead">Information according to § 5 DDG.</p>
-      <Operator info={info} />
-      {o.register && <p>Register entry: {o.register}</p>}
-      {o.vatId && <p>VAT identification number (§ 27a UStG): {o.vatId}</p>}
-      <h2>About this website</h2>
-      <p>
-        This website is a technology demonstration of x402 payments on Cardano.
-        The 3D-printed token is free. The ADA payment covers shipping and
-        handling only. The source code is public. Customer data is never part of it.
-      </p>
-    </>
-  );
-}
 
 export function Legal({ page, onClose }: { page: LegalPage; onClose: () => void }) {
   const [info, setInfo] = useState<LegalInfo | null>(null);
@@ -215,7 +191,7 @@ export function Legal({ page, onClose }: { page: LegalPage; onClose: () => void 
           <p>The operator must set OPERATOR_NAME, OPERATOR_ADDRESS and OPERATOR_EMAIL before this shop is used publicly.</p>
         </div>
       )}
-      {info && (page === "privacy" ? <Privacy info={info} /> : <Imprint info={info} />)}
+      {info && page === "privacy" && <Privacy info={info} />}
     </main>
   );
 }
