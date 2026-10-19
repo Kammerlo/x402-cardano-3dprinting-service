@@ -14,12 +14,7 @@ import {
   error,
 } from "./domain";
 import { clean, constantEqual, digest, secretMatches, token } from "./security";
-import {
-  SOLD_ORDERS_SQL,
-  capGuardParams,
-  orderCapFor,
-  soldOrders,
-} from "./orderCap";
+import { CAP_OPEN_SQL, ORDER_LIMIT_CEILING, capStatus } from "./orderCap";
 import { retentionDaysFor, scheduleErasure } from "./privacy";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -113,7 +108,7 @@ app.get("/api/ready", async (c) => {
   await query(config(c), "SELECT id FROM shop_settings WHERE id=1");
   return c.json({ ok: true });
 });
-// Operator identity for the privacy notice and imprint. Served even while the
+// Controller identity for the privacy notice (GDPR Art. 13). Served even while the
 // payment configuration is incomplete, so the legal pages never disappear.
 app.get("/api/legal", (c) => {
   const env = config(c);
@@ -122,10 +117,6 @@ app.get("/api/legal", (c) => {
     name: value("OPERATOR_NAME"),
     address: value("OPERATOR_ADDRESS").replace(/\\n/g, "\n"),
     email: value("OPERATOR_EMAIL"),
-    phone: value("OPERATOR_PHONE"),
-    vatId: value("OPERATOR_VAT_ID"),
-    representative: value("OPERATOR_REPRESENTATIVE"),
-    register: value("OPERATOR_REGISTER"),
   };
   return c.json({
     operator,
@@ -158,9 +149,7 @@ app.get("/api/catalog", async (c) => {
     "SELECT count(*)::text AS count FROM orders WHERE status IN ('PAID','BATCHED','PRINTING')",
   );
   const s = settings[0];
-  const cap = orderCapFor(env),
-    sold = cap.kind === "cap" ? await soldOrders(env) : 0,
-    soldOut = cap.kind === "invalid" || (cap.kind === "cap" && sold >= cap.n);
+  const cap = await capStatus(env);
   const fresh =
     !!s?.gateway_last_seen &&
     Date.now() - new Date(s.gateway_last_seen).getTime() < 45_000;
@@ -169,10 +158,8 @@ app.get("/api/catalog", async (c) => {
     ["DISPATCHING", "PRINTING"].includes(s?.current_status || "");
   const availability = s?.paused
     ? "operator_paused"
-    : cap.kind === "invalid"
-      ? "misconfigured"
-      : soldOut
-        ? "sold_out"
+    : cap.soldOut
+      ? "sold_out"
         : !fresh
       ? "gateway_offline"
       : orphaned
@@ -196,9 +183,9 @@ app.get("/api/catalog", async (c) => {
     network,
     payTo: env.SELLER_ADDRESS,
     pending: Number(paid[0]?.count || 0),
-    maxOrders: cap.kind === "cap" ? cap.n : null,
-    remaining: cap.kind === "cap" ? Math.max(0, cap.n - sold) : null,
-    soldOut,
+    maxOrders: cap.maxOrders || null,
+    remaining: cap.maxOrders ? Math.max(0, cap.maxOrders - cap.sold) : null,
+    soldOut: cap.soldOut,
   });
 });
 app.post("/api/orders", async (c) => {
@@ -209,9 +196,6 @@ app.post("/api/orders", async (c) => {
     return error("Payment configuration incomplete", 503);
   if (b?.expectedNetwork !== undefined && b.expectedNetwork !== network)
     return error("The shop network changed. Refresh and check your wallet before creating an order.", 409);
-  const cap = orderCapFor(env);
-  if (cap.kind === "invalid")
-    return error("The order limit is misconfigured; contact the operator", 503);
   const name = clean(b?.name, 100),
     email = clean(b?.email, 160),
     line1 = clean(b?.addressLine1, 180),
@@ -237,13 +221,12 @@ app.post("/api/orders", async (c) => {
     return error("Price configuration is invalid", 503);
   // The cap is checked again before any payment is reserved; this only
   // spares customers an order that could never be paid.
-  const guard = capGuardParams(cap);
   const rows = await query<{ id: string }>(
     env,
     `INSERT INTO orders (id,access_hash,customer_name,email,address_line1,address_line2,postal_code,city,country,price_lovelace,network,terms_acknowledged_at)
     SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $12::boolean THEN now() END
     WHERE (SELECT NOT paused FROM shop_settings WHERE id=1)
-      AND ($13::int = 0 OR ${SOLD_ORDERS_SQL} < $13::int)
+      AND ${CAP_OPEN_SQL}
     RETURNING id`,
     [
       id,
@@ -258,7 +241,6 @@ app.post("/api/orders", async (c) => {
       price,
       network,
       b?.acknowledged === true,
-      guard.limit,
     ],
   );
   if (!rows.length) {
@@ -455,15 +437,13 @@ app.get("/api/admin/orders", async (c) => {
         [settings[0].current_batch_id],
       )
     : [];
-  const cap = orderCapFor(env),
-    sold = await soldOrders(env);
+  const cap = await capStatus(env);
   return c.json({
     orders: rows,
     orderCap: {
-      maxOrders: cap.kind === "cap" ? cap.n : null,
-      valid: cap.kind !== "invalid",
-      sold,
-      oversold: cap.kind === "cap" ? Math.max(0, sold - cap.n) : 0,
+      maxOrders: cap.maxOrders || null,
+      sold: cap.sold,
+      oversold: cap.maxOrders ? Math.max(0, cap.sold - cap.maxOrders) : 0,
     },
     totals: Object.fromEntries(totals.map((r) => [r.status, r.count])),
     paymentRequiredWithTxCount: totals.find((r) => r.status === "AWAITING_PAYMENT")?.signed_count || 0,
@@ -525,6 +505,22 @@ app.post("/api/admin/pause", async (c) => {
   if (typeof b?.paused !== "boolean") return error("Invalid setting");
   await query(env, "UPDATE shop_settings SET paused=$1 WHERE id=1", [b.paused]);
   return c.json({ paused: b.paused });
+});
+app.post("/api/admin/order-limit", async (c) => {
+  const env = config(c);
+  const b = await c.req.json().catch(() => null);
+  const value = b?.maxOrders;
+  if (
+    typeof b !== "object" ||
+    b === null ||
+    !("maxOrders" in b) ||
+    (value !== null &&
+      !(Number.isInteger(value) && value >= 0 && value <= ORDER_LIMIT_CEILING))
+  )
+    return error(`Enter a whole number between 0 and ${ORDER_LIMIT_CEILING}, or leave empty for unlimited`);
+  const maxOrders = value ?? 0;
+  await query(env, "UPDATE shop_settings SET max_orders=$1 WHERE id=1", [maxOrders]);
+  return c.json({ maxOrders });
 });
 app.post("/api/admin/print/start-next", async (c) => {
   const body = await c.req.json().catch(() => null);

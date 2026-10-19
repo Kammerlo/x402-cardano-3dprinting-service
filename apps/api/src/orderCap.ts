@@ -1,35 +1,25 @@
 import { query } from "./db";
 import type { Env } from "./domain";
 
-export type OrderCap =
-  | { kind: "unlimited" }
-  | { kind: "cap"; n: number }
-  | { kind: "invalid" };
-
-// MAX_ORDERS unset, empty or 0 means unlimited. Any other non-integer fails closed.
-export function orderCapFor(env: Env): OrderCap {
-  const raw = (env.MAX_ORDERS ?? "").trim();
-  if (!raw || /^0+$/.test(raw)) return { kind: "unlimited" };
-  if (!/^\d{1,7}$/.test(raw)) return { kind: "invalid" };
-  return { kind: "cap", n: Number(raw) };
-}
+// The order limit is set in the admin dashboard; 0 means unlimited. Guards
+// read it inside their own SQL statement, so a change applies immediately.
+export const ORDER_LIMIT_CEILING = 1_000_000;
+export const CAP_SQL = "(SELECT max_orders FROM shop_settings WHERE id=1)";
 
 // Only settled, non-refunded orders count, so abandoned checkouts cannot
 // exhaust the cap. Every path that marks an order PAID sets tx_hash.
 export const SOLD_ORDERS_SQL =
   "(SELECT count(*) FROM orders WHERE tx_hash IS NOT NULL AND status<>'REFUNDED')";
 
-// SQL parameters for a guard of the form
-// `NOT $closed::boolean AND ($limit::int = 0 OR ${SOLD_ORDERS_SQL} < $limit::int)`.
-export const capGuardParams = (cap: OrderCap) => ({
-  limit: cap.kind === "cap" ? cap.n : 0,
-  closed: cap.kind === "invalid",
-});
+// True while new orders and payments may still be accepted.
+export const CAP_OPEN_SQL = `(${CAP_SQL} = 0 OR ${SOLD_ORDERS_SQL} < ${CAP_SQL})`;
 
-export async function soldOrders(env: Env) {
-  const [row] = await query<{ sold: number }>(
+export async function capStatus(env: Env) {
+  const [row] = await query<{ max_orders: number; sold: number }>(
     env,
-    `SELECT ${SOLD_ORDERS_SQL}::int AS sold`,
+    `SELECT ${CAP_SQL} AS max_orders, ${SOLD_ORDERS_SQL}::int AS sold`,
   );
-  return row?.sold ?? 0;
+  const maxOrders = row?.max_orders ?? 0,
+    sold = row?.sold ?? 0;
+  return { maxOrders, sold, soldOut: maxOrders > 0 && sold >= maxOrders };
 }
